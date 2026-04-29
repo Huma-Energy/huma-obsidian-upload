@@ -10,9 +10,11 @@ export interface StoredTokens {
 export interface HumaPluginData {
 	settings: HumaSettings;
 	tokens: StoredTokens | null;
-	// Local manifest written in later tasks (3–6); reserved here so loadData/saveData stays stable.
 	manifest: ManifestRecord[];
 	auditRing: AuditEntry[];
+	// Server-time of the last successful manifest fetch; used as `?since=`
+	// for delta polling in the sync engine.
+	lastSince: string | null;
 }
 
 export interface HumaSettings {
@@ -43,4 +45,5 @@ export const DEFAULT_PLUGIN_DATA: HumaPluginData = {
 	tokens: null,
 	manifest: [],
 	auditRing: [],
+	lastSince: null,
 };
