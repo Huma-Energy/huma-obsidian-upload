@@ -1,0 +1,41 @@
+{
+	"name": "huma-obsidian-vault-sync",
+	"version": "0.1.0",
+	"description": "Bidirectional sync between an Obsidian vault and the Huma dashboard's collaborative editor.",
+	"main": "main.js",
+	"type": "module",
+	"scripts": {
+		"dev": "node esbuild.config.mjs",
+		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+		"version": "node version-bump.mjs && git add manifest.json versions.json",
+		"lint": "eslint .",
+		"test": "vitest run",
+		"test:watch": "vitest"
+	},
+	"keywords": [
+		"obsidian",
+		"obsidian-plugin",
+		"huma",
+		"vault",
+		"sync"
+	],
+	"license": "MIT",
+	"devDependencies": {
+		"@eslint/js": "9.30.1",
+		"@types/diff-match-patch": "^1.0.36",
+		"@types/node": "^20.11.0",
+		"esbuild": "0.25.5",
+		"eslint-plugin-obsidianmd": "0.1.9",
+		"globals": "14.0.0",
+		"jiti": "2.6.1",
+		"obsidian": "latest",
+		"tslib": "2.4.0",
+		"typescript": "^5.8.3",
+		"typescript-eslint": "8.35.1",
+		"vitest": "^2.1.8"
+	},
+	"dependencies": {
+		"diff-match-patch": "^1.0.5",
+		"gray-matter": "^4.0.3"
+	}
+}
