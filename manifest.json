@@ -1,0 +1,10 @@
+{
+	"id": "huma-vault-sync",
+	"name": "Huma Vault Sync",
+	"version": "0.1.0",
+	"minAppVersion": "0.15.0",
+	"description": "Bidirectional sync between an Obsidian vault and the Huma dashboard's collaborative editor.",
+	"author": "Huma Energy",
+	"authorUrl": "https://huma.energy",
+	"isDesktopOnly": false
+}

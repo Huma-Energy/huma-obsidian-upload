@@ -1,0 +1,31 @@
+# vscode
+.vscode
+
+# Intellij
+*.iml
+.idea
+
+# npm
+node_modules
+
+# Build output (uploaded to GitHub releases instead of committed)
+main.js
+
+# Sourcemaps
+*.map
+
+# Obsidian local plugin data
+data.json
+
+# macOS
+.DS_Store
+
+# Env / secrets
+.env
+.env.*
+
+# Test coverage
+coverage
+
+# Vitest cache
+.vitest-cache
