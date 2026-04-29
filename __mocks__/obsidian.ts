@@ -1,0 +1,217 @@
+// Minimal Obsidian API mock for Vitest. Only the surface our plugin code
+// imports is implemented. Pattern follows
+// addozhang/obsidian-image-upload-toolkit's Vitest mock approach.
+
+export class TFile {
+	path: string;
+	basename: string;
+	extension: string;
+	stat: { mtime: number; ctime: number; size: number };
+	constructor(path: string, content: string = "") {
+		this.path = path;
+		const slash = path.lastIndexOf("/");
+		const dot = path.lastIndexOf(".");
+		this.basename = path.slice(slash + 1, dot > slash ? dot : path.length);
+		this.extension = dot > slash ? path.slice(dot + 1) : "";
+		const now = Date.now();
+		this.stat = { mtime: now, ctime: now, size: content.length };
+	}
+}
+
+export class TFolder {
+	path: string;
+	constructor(path: string) {
+		this.path = path;
+	}
+}
+
+export type TAbstractFile = TFile | TFolder;
+
+export class MockVault {
+	private readonly files = new Map<string, { file: TFile; content: string }>();
+	private readonly folders = new Set<string>();
+
+	addFile(path: string, content: string): TFile {
+		const file = new TFile(path, content);
+		this.files.set(path, { file, content });
+		return file;
+	}
+
+	getMarkdownFiles(): TFile[] {
+		return Array.from(this.files.values())
+			.filter(({ file }) => file.extension === "md")
+			.map(({ file }) => file);
+	}
+
+	getAbstractFileByPath(path: string): TAbstractFile | null {
+		const f = this.files.get(path);
+		if (f) return f.file;
+		if (this.folders.has(path)) return new TFolder(path);
+		return null;
+	}
+
+	async cachedRead(file: TFile): Promise<string> {
+		return this.files.get(file.path)?.content ?? "";
+	}
+
+	async read(file: TFile): Promise<string> {
+		return this.cachedRead(file);
+	}
+
+	async modify(file: TFile, content: string): Promise<void> {
+		const entry = this.files.get(file.path);
+		if (!entry) throw new Error(`No such file: ${file.path}`);
+		entry.content = content;
+		entry.file.stat.mtime = Date.now();
+		entry.file.stat.size = content.length;
+	}
+
+	async create(path: string, content: string): Promise<TFile> {
+		if (this.files.has(path)) throw new Error(`File exists: ${path}`);
+		const file = new TFile(path, content);
+		this.files.set(path, { file, content });
+		return file;
+	}
+
+	async createFolder(path: string): Promise<void> {
+		this.folders.add(path);
+	}
+
+	on(_event: string, _handler: unknown): { unload(): void } {
+		return { unload() {} };
+	}
+
+	getFileContents(path: string): string | undefined {
+		return this.files.get(path)?.content;
+	}
+
+	listFilePaths(): string[] {
+		return Array.from(this.files.keys());
+	}
+}
+
+export interface MockApp {
+	vault: MockVault;
+	workspace: {
+		onLayoutReady(cb: () => void): void;
+		on(event: string, handler: unknown): { unload(): void };
+		getLeaf(_create: boolean): { openFile(_f: TFile): Promise<void> };
+	};
+}
+
+export function createMockApp(): MockApp {
+	return {
+		vault: new MockVault(),
+		workspace: {
+			onLayoutReady(cb) {
+				cb();
+			},
+			on(_event, _handler) {
+				return { unload() {} };
+			},
+			getLeaf(_create) {
+				return {
+					async openFile(_f) {
+						return undefined;
+					},
+				};
+			},
+		},
+	};
+}
+
+export type App = MockApp;
+
+// The classes below are imported by source modules but never *instantiated*
+// in unit tests; they only need to be valid identifiers / constructable
+// shells.
+export class Plugin {
+	app: App;
+	manifest: { id: string; version: string };
+	constructor(app: App, manifest: { id: string; version: string }) {
+		this.app = app;
+		this.manifest = manifest;
+	}
+	addStatusBarItem(): HTMLElement {
+		return {} as HTMLElement;
+	}
+	addCommand(_def: unknown): void {}
+	addSettingTab(_tab: unknown): void {}
+	registerEvent(_e: unknown): void {}
+	registerInterval(_n: number): number {
+		return 0;
+	}
+	async loadData(): Promise<unknown> {
+		return null;
+	}
+	async saveData(_d: unknown): Promise<void> {}
+}
+
+export class PluginSettingTab {
+	app: App;
+	plugin: Plugin;
+	containerEl: HTMLElement;
+	constructor(app: App, plugin: Plugin) {
+		this.app = app;
+		this.plugin = plugin;
+		this.containerEl = {} as HTMLElement;
+	}
+	display(): void {}
+}
+
+export class Setting {
+	constructor(_el: HTMLElement) {}
+	setName(_n: string): this {
+		return this;
+	}
+	setDesc(_d: string): this {
+		return this;
+	}
+	addText(_cb: unknown): this {
+		return this;
+	}
+	addButton(_cb: unknown): this {
+		return this;
+	}
+	addSlider(_cb: unknown): this {
+		return this;
+	}
+}
+
+export class Modal {
+	app: App;
+	contentEl: HTMLElement;
+	constructor(app: App) {
+		this.app = app;
+		this.contentEl = {} as HTMLElement;
+	}
+	open(): void {}
+	close(): void {}
+	onOpen(): void {}
+	onClose(): void {}
+}
+
+export class Notice {
+	constructor(_message: string, _timeout?: number) {}
+}
+
+export interface Component {
+	registerEvent(_e: unknown): void;
+}
+
+export const MarkdownRenderer = {
+	async render(
+		_app: App,
+		_md: string,
+		_el: HTMLElement,
+		_path: string,
+		_owner: Component,
+	): Promise<void> {},
+};
+
+export const Platform = {
+	isMobile: false,
+	isDesktop: true,
+};
+
+export type WorkspaceLeaf = unknown;
