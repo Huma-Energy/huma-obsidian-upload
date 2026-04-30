@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
-import { MockVault, type MockApp } from "../../__mocks__/obsidian";
+import {
+	MockFileManager,
+	MockVault,
+	type MockApp,
+} from "../../__mocks__/obsidian";
 import { scanVault } from "../../src/sync/scan";
 
 const FIXTURE_ROOT = join(__dirname, "..", "fixtures", "vault");
@@ -15,6 +19,7 @@ function loadFixtureVault(): MockApp {
 	}
 	return {
 		vault,
+		fileManager: new MockFileManager(vault),
 		workspace: {
 			onLayoutReady() {},
 			on() {
@@ -68,5 +73,24 @@ describe("scanVault", () => {
 		const b = await scanVault(app as unknown as Parameters<typeof scanVault>[0]);
 		const aByPath = new Map(a.map((r) => [r.path, r.hash]));
 		for (const r of b) expect(aByPath.get(r.path)).toBe(r.hash);
+	});
+
+	it("excludes *.conflict.md files from the scan", async () => {
+		const vault = new MockVault();
+		vault.addFile("a.md", "alpha");
+		vault.addFile("a.conflict.md", "<<<<<<< local\nx\n=======\ny\n>>>>>>> server\n");
+		vault.addFile("nested/b.conflict.md", "");
+		const app: MockApp = {
+			vault,
+			fileManager: new MockFileManager(vault),
+			workspace: {
+				onLayoutReady() {},
+				on() { return { unload() {} }; },
+				getLeaf() { return { async openFile() {} }; },
+			},
+		};
+		const result = await scanVault(app as unknown as Parameters<typeof scanVault>[0]);
+		const paths = result.map((r) => r.path);
+		expect(paths).toEqual(["a.md"]);
 	});
 });

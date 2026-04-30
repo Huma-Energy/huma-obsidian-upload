@@ -2,6 +2,8 @@
 // imports is implemented. Pattern follows
 // addozhang/obsidian-image-upload-toolkit's Vitest mock approach.
 
+import matter from "gray-matter";
+
 export class TFile {
 	path: string;
 	basename: string;
@@ -66,6 +68,19 @@ export class MockVault {
 		entry.file.stat.size = content.length;
 	}
 
+	async process(
+		file: TFile,
+		fn: (data: string) => string,
+	): Promise<string> {
+		const entry = this.files.get(file.path);
+		if (!entry) throw new Error(`No such file: ${file.path}`);
+		const next = fn(entry.content);
+		entry.content = next;
+		entry.file.stat.mtime = Date.now();
+		entry.file.stat.size = next.length;
+		return next;
+	}
+
 	async create(path: string, content: string): Promise<TFile> {
 		if (this.files.has(path)) throw new Error(`File exists: ${path}`);
 		const file = new TFile(path, content);
@@ -92,6 +107,7 @@ export class MockVault {
 
 export interface MockApp {
 	vault: MockVault;
+	fileManager: MockFileManager;
 	workspace: {
 		onLayoutReady(cb: () => void): void;
 		on(event: string, handler: unknown): { unload(): void };
@@ -99,9 +115,35 @@ export interface MockApp {
 	};
 }
 
+// Stand-in for Obsidian's FileManager.processFrontMatter. Uses gray-matter
+// (already a production dep) so the mock's parsing semantics match what
+// production code expects when it later reads the same file back.
+export class MockFileManager {
+	private readonly vault: MockVault;
+	constructor(vault: MockVault) {
+		this.vault = vault;
+	}
+	async processFrontMatter(
+		file: TFile,
+		fn: (frontmatter: Record<string, unknown>) => void,
+	): Promise<void> {
+		const text = (await this.vault.cachedRead(file)) ?? "";
+		const parsed = matter(text);
+		const fm = { ...(parsed.data as Record<string, unknown>) };
+		fn(fm);
+		const next =
+			Object.keys(fm).length === 0
+				? parsed.content
+				: matter.stringify(parsed.content, fm);
+		await this.vault.modify(file, next);
+	}
+}
+
 export function createMockApp(): MockApp {
+	const vault = new MockVault();
 	return {
-		vault: new MockVault(),
+		vault,
+		fileManager: new MockFileManager(vault),
 		workspace: {
 			onLayoutReady(cb) {
 				cb();
@@ -215,3 +257,16 @@ export const Platform = {
 };
 
 export type WorkspaceLeaf = unknown;
+
+// Mirrors Obsidian's normalizePath: collapse slashes, drop leading/trailing
+// slashes, replace non-breaking spaces, NFC-normalize. Just enough behaviour
+// for tests to exercise the security-relevant transformations.
+export function normalizePath(input: string): string {
+	let p = input.replace(/[\\/]+/g, "/");
+	p = p.replace(/^\/+|\/+$/g, "");
+	p = p.replace(/\u00a0/g, " ");
+	if (typeof (p as unknown as { normalize?: unknown }).normalize === "function") {
+		p = p.normalize("NFC");
+	}
+	return p;
+}

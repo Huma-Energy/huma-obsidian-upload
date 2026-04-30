@@ -14,6 +14,7 @@ export default tseslint.config(
 					allowDefaultProject: [
 						"eslint.config.js",
 						"manifest.json",
+						"vitest.config.ts",
 					],
 				},
 				tsconfigRootDir: import.meta.dirname,
@@ -22,6 +23,21 @@ export default tseslint.config(
 		},
 	},
 	...obsidianmd.configs.recommended,
+	{
+		// Tests and Vitest config run under Node — Node builtins and globals
+		// are intentionally available; the obsidianmd recommendations (which
+		// assume plugin-runtime sandboxing) don't apply here.
+		files: ["tests/**/*.ts", "vitest.config.ts"],
+		languageOptions: {
+			globals: {
+				...globals.node,
+			},
+		},
+		rules: {
+			"import/no-nodejs-modules": "off",
+			"no-undef": "off",
+		},
+	},
 	globalIgnores([
 		"node_modules",
 		"dist",

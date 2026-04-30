@@ -1,5 +1,7 @@
-import type { App, TFile } from "obsidian";
-import { stringifyFile, withHumaUuid } from "./frontmatter";
+import { normalizePath, type App, type TFile } from "obsidian";
+import { replaceFileBody, stringifyFile, withHumaUuid } from "./frontmatter";
+import { sha256Hex } from "./hash";
+import type { SelfWriteTracker } from "./self-write-tracker";
 
 export const CONFLICT_SUFFIX = ".conflict.md";
 
@@ -26,13 +28,20 @@ export interface DirtyMerge {
 export async function emitConflict(
 	app: App,
 	merge: DirtyMerge,
+	tracker: SelfWriteTracker,
 ): Promise<ConflictEmission> {
-	const conflictPath = conflictPathFor(merge.path);
+	const originalPath = normalizePath(merge.path);
+	const conflictPath = conflictPathFor(originalPath);
 	const conflictBody = formatConflictBody(merge.localBody, merge.serverBody);
+	const [conflictHash, serverHash] = await Promise.all([
+		sha256Hex(conflictBody),
+		sha256Hex(merge.serverBody),
+	]);
 
+	tracker.record(conflictPath, conflictHash);
 	const existingConflict = app.vault.getAbstractFileByPath(conflictPath);
 	if (existingConflict && isMarkdownTFile(existingConflict)) {
-		await app.vault.modify(existingConflict, conflictBody);
+		await replaceFileBody(app, existingConflict, conflictBody);
 	} else if (existingConflict) {
 		throw new Error(
 			`Cannot write conflict file at ${conflictPath}: path exists and is not a markdown file.`,
@@ -41,29 +50,27 @@ export async function emitConflict(
 		await app.vault.create(conflictPath, conflictBody);
 	}
 
-	const original = app.vault.getAbstractFileByPath(merge.path);
-	const frontmatter = withHumaUuid(
-		merge.serverFrontmatter ?? {},
-		merge.id,
-	);
+	const original = app.vault.getAbstractFileByPath(originalPath);
+	const frontmatter = withHumaUuid(merge.serverFrontmatter ?? {}, merge.id);
 	const text = stringifyFile(merge.serverBody, frontmatter);
+	tracker.record(originalPath, serverHash);
 	if (original && isMarkdownTFile(original)) {
-		await app.vault.modify(original, text);
+		await replaceFileBody(app, original, text);
 	} else if (!original) {
-		await app.vault.create(merge.path, text);
+		await app.vault.create(originalPath, text);
 	} else {
 		throw new Error(
-			`Cannot replace ${merge.path} with server body: path exists and is not a markdown file.`,
+			`Cannot replace ${originalPath} with server body: path exists and is not a markdown file.`,
 		);
 	}
 
-	return { conflictPath, originalPath: merge.path };
+	return { conflictPath, originalPath };
 }
 
 export function conflictPathFor(originalPath: string): string {
-	const dot = originalPath.lastIndexOf(".");
-	const base =
-		dot > originalPath.lastIndexOf("/") ? originalPath.slice(0, dot) : originalPath;
+	const safe = normalizePath(originalPath);
+	const dot = safe.lastIndexOf(".");
+	const base = dot > safe.lastIndexOf("/") ? safe.slice(0, dot) : safe;
 	return `${base}${CONFLICT_SUFFIX}`;
 }
 

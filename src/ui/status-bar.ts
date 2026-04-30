@@ -15,7 +15,6 @@ export function attachStatusBar(el: HTMLElement): StatusBarHandle {
 	let current: StatusBarState = { kind: "signed-out" };
 	let clickHandler: ((state: StatusBarState) => void) | null = null;
 	el.addClass("huma-status-bar");
-	el.style.cursor = "pointer";
 	el.addEventListener("click", () => clickHandler?.(current));
 
 	return {
