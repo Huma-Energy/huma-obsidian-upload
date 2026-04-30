@@ -34,33 +34,39 @@
 }
 
 .huma-audit-row {
-	display: grid;
-	grid-template-columns: minmax(140px, auto) minmax(110px, auto) minmax(0, 1fr);
-	column-gap: 8px;
-	row-gap: 2px;
-	padding: 4px 0;
+	display: flex;
+	align-items: baseline;
+	gap: 10px;
+	padding: 2px 4px;
 	border-bottom: 1px solid var(--background-modifier-border);
-	word-break: break-word;
+	overflow: hidden;
 }
 
 .huma-audit-row:last-child {
 	border-bottom: none;
 }
 
+.huma-audit-row > span {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
 .huma-audit-ts {
 	color: var(--text-muted);
-	white-space: nowrap;
+	flex: 0 0 auto;
 }
 
 .huma-audit-event {
 	color: var(--text-accent);
 	font-weight: 600;
+	flex: 0 0 auto;
 }
 
 .huma-audit-id {
 	color: var(--text-muted);
-	grid-column: 1 / -1;
-	font-size: 0.85em;
+	flex: 0 1 auto;
+	min-width: 0;
 }
 
 .huma-audit-id:empty {
@@ -68,13 +74,14 @@
 }
 
 .huma-audit-path {
-	grid-column: 3;
-	grid-row: 1;
+	flex: 1 1 auto;
+	min-width: 0;
 }
 
 .huma-audit-detail {
-	grid-column: 1 / -1;
 	color: var(--text-muted);
+	flex: 2 1 auto;
+	min-width: 0;
 }
 
 .huma-audit-detail:empty {
