@@ -464,7 +464,7 @@ export default class HumaVaultSyncPlugin extends Plugin {
 	}
 
 	private openAuditLog(): void {
-		new AuditLogModal(this.app, this.data.auditRing, this).open();
+		new AuditLogModal(this.app, this.data.auditRing).open();
 	}
 
 	openAuditLogModal(): void {
