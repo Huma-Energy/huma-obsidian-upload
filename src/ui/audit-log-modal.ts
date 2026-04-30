@@ -46,8 +46,10 @@ export class AuditLogModal extends Modal {
 			text: `Showing the last ${this.entries.length} actions from this device's local audit ring (capped at 200). The server's audit log is the canonical record.`,
 		});
 
-		const actions = contentEl.createDiv({ cls: "huma-audit-actions" });
-		const copyBtn = actions.createEl("button", { text: "Copy" });
+		// Single toolbar holding action buttons + filter pills on one row.
+		const toolbar = contentEl.createDiv({ cls: "huma-audit-toolbar" });
+
+		const copyBtn = toolbar.createEl("button", { text: "Copy" });
 		copyBtn.addEventListener("click", () => {
 			void (async () => {
 				await navigator.clipboard.writeText(
@@ -60,7 +62,7 @@ export class AuditLogModal extends Modal {
 			})();
 		});
 		if (this.onClear) {
-			const clearBtn = actions.createEl("button", {
+			const clearBtn = toolbar.createEl("button", {
 				text: "Clear",
 				cls: "mod-warning",
 			});
@@ -79,8 +81,10 @@ export class AuditLogModal extends Modal {
 			});
 		}
 
+		// Visual separator between action buttons and filter pills.
+		toolbar.createDiv({ cls: "huma-audit-toolbar-sep" });
+
 		const list = contentEl.createDiv({ cls: "huma-audit-log" });
-		const filterBar = contentEl.createDiv({ cls: "huma-audit-filter" });
 
 		// Filter buttons swap a class on the list container; CSS hides rows
 		// that don't match. No re-render needed.
@@ -98,7 +102,7 @@ export class AuditLogModal extends Modal {
 			}
 		};
 		for (const f of FILTERS) {
-			const b = filterBar.createEl("button", {
+			const b = toolbar.createEl("button", {
 				text: `${f.label} (${countBy(this.entries, f.id)})`,
 				cls: "huma-audit-filter-btn",
 			});
@@ -106,9 +110,6 @@ export class AuditLogModal extends Modal {
 			b.addEventListener("click", () => setFilter(f.id));
 			filterButtons.push(b);
 		}
-		// Reorder so the filter bar appears between the description and the
-		// list — createDiv inserts in DOM order, so move list after filterBar.
-		contentEl.insertBefore(filterBar, list);
 
 		// Build rows newest-first.
 		for (const e of [...this.entries].reverse()) {
