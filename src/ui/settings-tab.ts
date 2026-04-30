@@ -46,8 +46,8 @@ export class HumaSettingsTab extends PluginSettingTab {
 	private renderObsidianSyncSection(containerEl: HTMLElement): void {
 		const sync = getInternalSyncPlugin(this.app);
 		if (!sync) return;
+		/* eslint-disable obsidianmd/ui/sentence-case -- "Obsidian Sync" is a product name */
 		new Setting(containerEl)
-			// eslint-disable-next-line obsidianmd/ui/sentence-case -- "Obsidian Sync" is a product name
 			.setName("Disable Obsidian Sync")
 			.setDesc(
 				"Obsidian's built-in Sync core plugin shows a status icon for its remote-vault subscription. If you don't use Obsidian Sync, disable it here so its icon doesn't sit next to Huma's status and look like a sync error.",
@@ -63,6 +63,7 @@ export class HumaSettingsTab extends PluginSettingTab {
 					}
 				}),
 			);
+		/* eslint-enable obsidianmd/ui/sentence-case */
 	}
 
 	private renderSyncLogSection(containerEl: HTMLElement): void {
