@@ -208,16 +208,24 @@ export default class HumaVaultSyncPlugin extends Plugin {
 			return;
 		}
 		if (result.suspicious.length > 0) {
-			const paths = result.suspicious
-				.slice(0, 3)
-				.map((h) => h.path)
-				.join(", ");
+			const paths = result.suspicious.map((h) => h.path);
+			const previewPaths = paths.slice(0, 3).join(", ");
 			new Notice(
-				`Huma Vault Sync warning: ${result.suspicious.length} file(s) contain token-shaped strings (${paths}${
+				`Huma Vault Sync warning: ${result.suspicious.length} file(s) contain token-shaped strings (${previewPaths}${
 					result.suspicious.length > 3 ? ", …" : ""
-				}). If these are not your tokens, you can ignore this notice.`,
+				}). See Show sync log for the full list. If these are not your tokens, you can ignore this notice.`,
 				8000,
 			);
+			pushAuditMany(this.data.auditRing, [
+				{
+					timestamp: new Date().toISOString(),
+					event: "token_scan_warning",
+					path: "(vault scan)",
+					id: null,
+					detail: `${paths.length} file(s): ${paths.join(", ")}`,
+				},
+			]);
+			await this.saveAll();
 		}
 	}
 
@@ -457,6 +465,10 @@ export default class HumaVaultSyncPlugin extends Plugin {
 
 	private openAuditLog(): void {
 		new AuditLogModal(this.app, this.data.auditRing, this).open();
+	}
+
+	openAuditLogModal(): void {
+		this.openAuditLog();
 	}
 
 	private openMobileStatus(): void {
