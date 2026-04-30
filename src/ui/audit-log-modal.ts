@@ -4,7 +4,7 @@
 // controlled by CSS so filtering is O(1) and doesn't re-render entries.
 // A "Copy all" button serializes the full ring to plain text.
 
-import { App, Modal, Notice, Setting } from "obsidian";
+import { App, Modal, Notice } from "obsidian";
 import type { AuditEntry, AuditEvent } from "../types";
 
 type Severity = "info" | "warning" | "error";
@@ -46,9 +46,12 @@ export class AuditLogModal extends Modal {
 			text: `Showing the last ${this.entries.length} actions from this device's local audit ring (capped at 200). The server's audit log is the canonical record.`,
 		});
 
-		const actions = new Setting(contentEl);
-		actions.addButton((btn) =>
-			btn.setButtonText("Copy all to clipboard").onClick(async () => {
+		const actions = contentEl.createDiv({ cls: "huma-audit-actions" });
+		const copyBtn = actions.createEl("button", {
+			text: "Copy all to clipboard",
+		});
+		copyBtn.addEventListener("click", () => {
+			void (async () => {
 				await navigator.clipboard.writeText(
 					renderAuditPlainText(this.entries),
 				);
@@ -56,22 +59,26 @@ export class AuditLogModal extends Modal {
 					`Huma: copied ${this.entries.length} sync log entries.`,
 					3000,
 				);
-			}),
-		);
+			})();
+		});
 		if (this.onClear) {
-			actions.addButton((btn) =>
-				btn
-					.setButtonText("Clear")
-					.setWarning()
-					.onClick(async () => {
-						const count = this.entries.length;
-						await this.onClear?.();
-						new Notice(`Huma: cleared ${count} sync log entries.`, 3000);
-						// Re-render with the now-empty ring; onOpen handles
-						// the empty-state message.
-						this.onOpen();
-					}),
-			);
+			const clearBtn = actions.createEl("button", {
+				text: "Clear",
+				cls: "mod-warning",
+			});
+			clearBtn.addEventListener("click", () => {
+				void (async () => {
+					const count = this.entries.length;
+					await this.onClear?.();
+					new Notice(
+						`Huma: cleared ${count} sync log entries.`,
+						3000,
+					);
+					// Re-render with the now-empty ring; onOpen handles the
+					// empty-state message.
+					this.onOpen();
+				})();
+			});
 		}
 
 		const list = contentEl.createDiv({ cls: "huma-audit-log" });
