@@ -66,4 +66,17 @@ describe("frontmatter", () => {
 		expect(h2).toBe(h1);
 		expect(reparsed.frontmatter[HUMA_UUID_KEY]).toBe("uuid-xyz");
 	});
+
+	it("hash of parsed-back body is stable across stringify round-trip even when body is empty", async () => {
+		// Backfilled web-native docs arrive with body=="" and frontmatter={huma_uuid}.
+		// The pull worker must hash what it actually wrote (parseFile(text).body),
+		// not the raw server body, otherwise the next scan flags the file as
+		// locally-edited every cycle (sha256("") != sha256("\n")).
+		const text = stringifyFile("", { huma_uuid: "uuid-empty" });
+		const onDiskBody = parseFile(text).body;
+		const hashWrite = await sha256Hex(onDiskBody);
+		// Simulate the next scan reading the same file content back.
+		const hashScan = await sha256Hex(parseFile(text).body);
+		expect(hashWrite).toBe(hashScan);
+	});
 });

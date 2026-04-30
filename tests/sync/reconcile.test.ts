@@ -180,4 +180,96 @@ describe("reconcile", () => {
 		});
 		expect(out.actions).toEqual([]);
 	});
+
+	it("emits rename-local when server moved a file the user did not", () => {
+		const out = reconcile({
+			serverManifest: [
+				serverEntry({
+					id: "id-r",
+					path: "Habitats/KLP/testklp.md",
+					version: 2,
+					hash: "h-local",
+				}),
+			],
+			localManifest: [
+				localRecord({
+					id: "id-r",
+					path: "testklp.md",
+					version: 2,
+					hash: "h-local",
+				}),
+			],
+			scanned: [
+				scanned({ uuid: "id-r", path: "testklp.md", hash: "h-local" }),
+			],
+		});
+		expect(out.actions).toHaveLength(1);
+		expect(out.actions[0]).toEqual({
+			kind: "rename-local",
+			id: "rename-local:id-r",
+			serverId: "id-r",
+			fromPath: "testklp.md",
+			toPath: "Habitats/KLP/testklp.md",
+		});
+		expect(out.stats.renameLocal).toBe(1);
+	});
+
+	it("rename-local plus pull when server renamed and bumped version", () => {
+		const out = reconcile({
+			serverManifest: [
+				serverEntry({
+					id: "id-r",
+					path: "new/path.md",
+					version: 3,
+					hash: "h-new",
+				}),
+			],
+			localManifest: [
+				localRecord({
+					id: "id-r",
+					path: "old/path.md",
+					version: 2,
+					hash: "h-local",
+				}),
+			],
+			scanned: [
+				// User hasn't edited locally — scan hash matches local manifest.
+				scanned({ uuid: "id-r", path: "old/path.md", hash: "h-local" }),
+			],
+		});
+		const kinds = out.actions.map((a) => a.kind);
+		expect(kinds).toEqual(["rename-local", "pull"]);
+		const pullAction = out.actions.find((a) => a.kind === "pull")!;
+		// Pull targets the post-rename path so the same-cycle write lands at
+		// the (now-existing) renamed file.
+		expect((pullAction as { path: string }).path).toBe("new/path.md");
+	});
+
+	it("does not emit plugin-side push-rename when scan path matches local", () => {
+		// Server-renamed scenario; ensure we don't ALSO produce a push that
+		// would try to rename the server back to the old path.
+		const out = reconcile({
+			serverManifest: [
+				serverEntry({
+					id: "id-r",
+					path: "new.md",
+					version: 1,
+					hash: "h-local",
+				}),
+			],
+			localManifest: [
+				localRecord({
+					id: "id-r",
+					path: "old.md",
+					version: 1,
+					hash: "h-local",
+				}),
+			],
+			scanned: [
+				scanned({ uuid: "id-r", path: "old.md", hash: "h-local" }),
+			],
+		});
+		const kinds = out.actions.map((a) => a.kind);
+		expect(kinds).toEqual(["rename-local"]);
+	});
 });

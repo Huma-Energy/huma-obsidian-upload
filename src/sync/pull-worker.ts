@@ -2,7 +2,12 @@ import { normalizePath, type App, type TFile } from "obsidian";
 import type { VaultApiClient } from "../client/vault-api";
 import type { ManifestRecord } from "../settings";
 import type { PullFile } from "../types";
-import { replaceFileBody, stringifyFile, withHumaUuid } from "./frontmatter";
+import {
+	parseFile,
+	replaceFileBody,
+	stringifyFile,
+	withHumaUuid,
+} from "./frontmatter";
 import { sha256Hex } from "./hash";
 import type { SelfWriteTracker } from "./self-write-tracker";
 
@@ -119,7 +124,12 @@ async function writePulledFile(
 	const frontmatter = withHumaUuid(file.frontmatter ?? {}, file.id);
 	const text = stringifyFile(file.body, frontmatter);
 	const existing = app.vault.getAbstractFileByPath(safePath);
-	const hash = await sha256Hex(file.body);
+	// Hash the body as parseFile would extract it from `text`, NOT the raw
+	// `file.body`. gray-matter's empty-body round-trip emits a trailing "\n"
+	// that scan would parse back; storing the raw-body hash here would make
+	// the next scan falsely flag the file as locally-edited every cycle.
+	const onDiskBody = parseFile(text).body;
+	const hash = await sha256Hex(onDiskBody);
 
 	tracker.record(safePath, hash);
 	if (existing && isMarkdownTFile(existing)) {

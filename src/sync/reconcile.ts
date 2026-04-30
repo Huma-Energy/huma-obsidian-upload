@@ -7,6 +7,7 @@ export type SyncAction =
 	| AddAction
 	| PullAction
 	| PushAction
+	| RenameLocalAction
 	| StaleLocalDeleteAction
 	| ServerDeletedAction;
 
@@ -28,6 +29,18 @@ export interface PushAction {
 	serverId: string | null;
 	path: string;
 	previousPath: string | null;
+}
+// Server-side rename: same UUID exists locally but the server's path field
+// differs from our manifest's path (and the file hasn't been moved locally).
+// Plugin renames the local file via app.fileManager.renameFile so the next
+// scan agrees with the server. Ordered before pulls so a same-cycle pull
+// writes the new body at the (now-existing) renamed path.
+export interface RenameLocalAction {
+	kind: "rename-local";
+	id: string;
+	serverId: string;
+	fromPath: string;
+	toPath: string;
 }
 export interface StaleLocalDeleteAction {
 	kind: "stale-local-delete";
@@ -56,6 +69,7 @@ export interface ReconcileOutput {
 		add: number;
 		pull: number;
 		push: number;
+		renameLocal: number;
 		conflict: number;
 		staleLocalDelete: number;
 		serverDeleted: number;
@@ -105,6 +119,7 @@ export function reconcile(input: ReconcileInput): ReconcileOutput {
 	const pulls: PullAction[] = [];
 	const pushes: PushAction[] = [];
 	const adds: AddAction[] = [];
+	const renamesLocal: RenameLocalAction[] = [];
 	const staleDeletes: StaleLocalDeleteAction[] = [];
 	const serverDeletes: ServerDeletedAction[] = [];
 	let conflictCount = 0;
@@ -157,13 +172,32 @@ export function reconcile(input: ReconcileInput): ReconcileOutput {
 		const serverNewer =
 			local === undefined || serverEntry.version > local.version;
 
+		// Server-side rename: server's path differs from our manifest, and
+		// the file hasn't been moved locally (scan still at manifest path).
+		// Emit rename-local; subsequent push/pull use the server path so they
+		// operate on the post-rename file.
+		const serverRenamed =
+			local !== undefined &&
+			serverEntry.path !== local.path &&
+			scanned.path === local.path;
+		if (serverRenamed && local !== undefined) {
+			renamesLocal.push({
+				kind: "rename-local",
+				id: actionId("rename-local", serverEntry.id),
+				serverId: serverEntry.id,
+				fromPath: local.path,
+				toPath: serverEntry.path,
+			});
+		}
+		const logicalPath = serverRenamed ? serverEntry.path : scanned.path;
+
 		if (serverNewer && !localEdited) {
 			// Clean pull case.
 			pulls.push({
 				kind: "pull",
 				id: actionId("pull", serverEntry.id),
 				serverId: serverEntry.id,
-				path: scanned.path,
+				path: logicalPath,
 				conflictedLocally: false,
 			});
 		} else if (serverNewer && localEdited) {
@@ -175,24 +209,30 @@ export function reconcile(input: ReconcileInput): ReconcileOutput {
 				kind: "push",
 				id: actionId("push", serverEntry.id),
 				serverId: serverEntry.id,
-				path: scanned.path,
+				path: logicalPath,
 				previousPath:
-					local && local.path !== scanned.path ? local.path : null,
+					!serverRenamed && local && local.path !== scanned.path
+						? local.path
+						: null,
 			});
 		} else if (localEdited) {
 			pushes.push({
 				kind: "push",
 				id: actionId("push", serverEntry.id),
 				serverId: serverEntry.id,
-				path: scanned.path,
+				path: logicalPath,
 				previousPath:
-					local && local.path !== scanned.path ? local.path : null,
+					!serverRenamed && local && local.path !== scanned.path
+						? local.path
+						: null,
 			});
 		} else if (
+			!serverRenamed &&
 			local !== undefined &&
 			local.path !== scanned.path
 		) {
-			// Pure rename — no body change but path moved. Push the rename.
+			// Plugin-side rename — no body change but the local user moved
+			// the file. Push the rename so the server's path field catches up.
 			pushes.push({
 				kind: "push",
 				id: actionId("push", serverEntry.id),
@@ -201,7 +241,7 @@ export function reconcile(input: ReconcileInput): ReconcileOutput {
 				previousPath: local.path,
 			});
 		}
-		// else: in-sync, no action.
+		// else: in-sync (or rename-local handles it alone), no further action.
 	}
 
 	// Pass 2: scanned files with a huma_uuid the server doesn't know about.
@@ -231,8 +271,11 @@ export function reconcile(input: ReconcileInput): ReconcileOutput {
 		});
 	}
 
+	// Order: server-deletes, then rename-local (so a same-cycle pull lands at
+	// the post-rename path), then pulls, pushes, adds, stale-deletes.
 	const actions: SyncAction[] = [
 		...serverDeletes,
+		...renamesLocal,
 		...pulls,
 		...pushes,
 		...adds,
@@ -245,6 +288,7 @@ export function reconcile(input: ReconcileInput): ReconcileOutput {
 			add: adds.length,
 			pull: pulls.length,
 			push: pushes.length,
+			renameLocal: renamesLocal.length,
 			conflict: conflictCount,
 			staleLocalDelete: staleDeletes.length,
 			serverDeleted: serverDeletes.length,
