@@ -39,6 +39,20 @@ export class HumaSettingsTab extends PluginSettingTab {
 		this.renderAuthSection(containerEl);
 		this.renderSyncIntervalSection(containerEl);
 		this.renderExclusionsSection(containerEl);
+		this.renderSyncLogSection(containerEl);
+	}
+
+	private renderSyncLogSection(containerEl: HTMLElement): void {
+		new Setting(containerEl)
+			.setName("Sync log")
+			.setDesc(
+				"Local audit ring (200 entries) of recent sync events and token-scan warnings. The dashboard's audit log is the canonical record.",
+			)
+			.addButton((btn) =>
+				btn.setButtonText("Show sync log").onClick(() => {
+					this.plugin.openAuditLogModal();
+				}),
+			);
 	}
 
 	private renderAuthSection(containerEl: HTMLElement): void {
@@ -91,29 +105,30 @@ export class HumaSettingsTab extends PluginSettingTab {
 				area.setValue(
 					this.plugin.data.settings.excludedFolders.join("\n"),
 				);
-				// Save the raw text on every keystroke (so partial edits
-				// persist if the user navigates away mid-edit), but only
-				// commit the *normalized* list and surface a Notice when the
-				// user finishes editing — i.e. on blur. Notice-per-keystroke
-				// is noise.
-				let focusSnapshot = this.plugin.data.settings.excludedFolders;
-				area.inputEl.addEventListener("focus", () => {
-					focusSnapshot = this.plugin.data.settings.excludedFolders;
-				});
+				// Save on every keystroke. Defer the "added N folders"
+				// Notice with a debounce: 1.5s after the user stops typing
+				// we look at what was added vs the baseline (last value the
+				// Notice acknowledged) and fire once. Avoids per-keystroke
+				// spam without depending on blur events, which Obsidian
+				// settings panels don't always emit.
+				let baseline = [...this.plugin.data.settings.excludedFolders];
+				let timer: ReturnType<typeof setTimeout> | null = null;
 				area.onChange(async (value) => {
 					this.plugin.data.settings.excludedFolders =
 						normalizeExcludedFolders(value.split("\n"));
 					await this.plugin.saveAll();
-				});
-				area.inputEl.addEventListener("blur", () => {
-					const next = this.plugin.data.settings.excludedFolders;
-					const added = next.filter((f) => !focusSnapshot.includes(f));
-					if (added.length > 0) {
-						new Notice(
-							`Huma: ${added.length} folder(s) excluded from sync. Files already on the server remain — archive them on the dashboard to remove.`,
-							8000,
-						);
-					}
+					if (timer) clearTimeout(timer);
+					timer = setTimeout(() => {
+						const next = this.plugin.data.settings.excludedFolders;
+						const added = next.filter((f) => !baseline.includes(f));
+						if (added.length > 0) {
+							new Notice(
+								`Huma: ${added.length} folder(s) excluded from sync. Files already on the server remain — archive them on the dashboard to remove.`,
+								8000,
+							);
+							baseline = [...next];
+						}
+					}, 1500);
 				});
 				area.inputEl.rows = 4;
 				area.inputEl.addClass("huma-excluded-folders");
