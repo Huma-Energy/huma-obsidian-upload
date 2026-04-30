@@ -1,3 +1,11 @@
+// Status bar item for the Huma sync state. Renders a Lucide icon (the same
+// system Obsidian Sync uses) plus a compact label, color-coded per state.
+// The full descriptive text lives in aria-label and the title attribute so
+// hover and screen readers still get the long form. attachStatusBar wires
+// click-through; the plugin owns what each state's click does.
+
+import { setIcon } from "obsidian";
+
 export type StatusBarState =
 	| { kind: "blocked"; reason: string }
 	| { kind: "signed-out" }
@@ -11,6 +19,15 @@ export interface StatusBarHandle {
 	onClick(handler: (state: StatusBarState) => void): void;
 }
 
+const STATE_CLASSES = [
+	"huma-status--blocked",
+	"huma-status--signed-out",
+	"huma-status--idle",
+	"huma-status--syncing",
+	"huma-status--error",
+	"huma-status--conflict",
+] as const;
+
 export function attachStatusBar(el: HTMLElement): StatusBarHandle {
 	let current: StatusBarState = { kind: "signed-out" };
 	let clickHandler: ((state: StatusBarState) => void) | null = null;
@@ -20,8 +37,21 @@ export function attachStatusBar(el: HTMLElement): StatusBarHandle {
 	return {
 		render(state: StatusBarState) {
 			current = state;
-			el.setText(formatStatusText(state));
-			el.setAttr("aria-label", formatStatusAria(state));
+			el.empty();
+			for (const cls of STATE_CLASSES) el.removeClass(cls);
+			el.addClass(`huma-status--${state.kind}`);
+
+			const iconEl = el.createSpan({ cls: "huma-status-icon" });
+			setIcon(iconEl, iconForState(state));
+
+			const label = shortLabelFor(state);
+			if (label.length > 0) {
+				el.createSpan({ cls: "huma-status-label", text: label });
+			}
+
+			const aria = formatStatusAria(state);
+			el.setAttr("aria-label", aria);
+			el.setAttr("title", aria);
 		},
 		onClick(handler) {
 			clickHandler = handler;
@@ -29,26 +59,39 @@ export function attachStatusBar(el: HTMLElement): StatusBarHandle {
 	};
 }
 
-export function formatStatusText(state: StatusBarState): string {
+export function iconForState(state: StatusBarState): string {
 	switch (state.kind) {
-		case "blocked":
-			return "Huma: ⛔ blocked";
 		case "signed-out":
-			return "Huma: signed out";
+			return "log-in";
 		case "idle":
-			return state.lastSyncedAt
-				? `Huma: ✓ ${formatRelative(state.lastSyncedAt)}`
-				: "Huma: ✓ idle";
+			return "check-circle";
 		case "syncing":
-			return `Huma: ⟳ syncing (${state.pendingActions})`;
+			return "refresh-cw";
 		case "error":
-			return "Huma: ● error";
+			return "alert-circle";
+		case "conflict":
+			return "alert-triangle";
+		case "blocked":
+			return "ban";
+	}
+}
+
+export function shortLabelFor(state: StatusBarState): string {
+	switch (state.kind) {
+		case "signed-out":
+			return "";
+		case "idle":
+			return state.lastSyncedAt ? formatRelative(state.lastSyncedAt) : "";
+		case "syncing":
+			return state.pendingActions > 0 ? String(state.pendingActions) : "";
+		case "error":
+			return "";
 		case "conflict": {
-			const parts: string[] = [];
-			if (state.conflictCount > 0) parts.push(`${state.conflictCount} conflict`);
-			if (state.staleCount > 0) parts.push(`${state.staleCount} stale`);
-			return `Huma: ⚠ ${parts.join(", ") || "attention"}`;
+			const total = state.conflictCount + state.staleCount;
+			return total > 0 ? String(total) : "";
 		}
+		case "blocked":
+			return "";
 	}
 }
 

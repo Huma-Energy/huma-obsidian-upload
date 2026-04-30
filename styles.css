@@ -2,7 +2,31 @@
 
 .huma-status-bar {
 	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
 }
+
+.huma-status-icon {
+	display: inline-flex;
+	align-items: center;
+}
+
+.huma-status-icon svg {
+	width: 14px;
+	height: 14px;
+}
+
+.huma-status-label {
+	font-size: 0.85em;
+}
+
+.huma-status--idle .huma-status-icon { color: var(--text-muted); }
+.huma-status--signed-out .huma-status-icon { color: var(--text-muted); }
+.huma-status--syncing .huma-status-icon { color: var(--text-accent); }
+.huma-status--error .huma-status-icon { color: var(--text-error); }
+.huma-status--conflict .huma-status-icon { color: var(--text-warning); }
+.huma-status--blocked .huma-status-icon { color: var(--text-error); }
 
 .huma-excluded-folders {
 	width: 100%;
