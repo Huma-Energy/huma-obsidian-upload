@@ -43,6 +43,7 @@ export interface SyncEngineDeps {
 	appendAudit(entries: AuditEntry[]): Promise<void>;
 	getLastSince(): string | null;
 	saveLastSince(iso: string): Promise<void>;
+	getExcludedFolders(): readonly string[];
 	callbacks?: SyncEngineCallbacks;
 }
 
@@ -81,13 +82,15 @@ export class SyncEngine {
 		callbacks?.onState({ kind: "syncing", pending: 0 });
 
 		try {
+			const excludedFolders = this.deps.getExcludedFolders();
 			const serverManifest = await fetchEntireManifest(api, this.deps.getLastSince());
-			const scanned = await scanVault(app);
+			const scanned = await scanVault(app, excludedFolders);
 			const localManifest = this.deps.getManifest();
 			const { actions, stats } = reconcile({
 				serverManifest: serverManifest.entries,
 				localManifest,
 				scanned,
+				excludedFolders,
 			});
 			callbacks?.onState({ kind: "syncing", pending: actions.length });
 

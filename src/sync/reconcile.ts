@@ -1,6 +1,7 @@
 import type { ManifestEntry } from "../types";
 import type { ManifestRecord } from "../settings";
 import type { ScannedFile } from "./scan";
+import { isExcludedPath } from "./exclusion";
 
 export type SyncAction =
 	| AddAction
@@ -45,6 +46,7 @@ export interface ReconcileInput {
 	serverManifest: readonly ManifestEntry[];
 	localManifest: readonly ManifestRecord[];
 	scanned: readonly ScannedFile[];
+	excludedFolders?: readonly string[];
 }
 
 export interface ReconcileOutput {
@@ -71,15 +73,31 @@ export interface ReconcileOutput {
 // a partial failure: replaying reconcile after a crash produces the same
 // action ids for the same residual work.
 export function reconcile(input: ReconcileInput): ReconcileOutput {
+	const excluded = input.excludedFolders ?? [];
+
+	// Excluded folders drop out of all three views before reconcile sees them:
+	// server entries don't pull, local manifest rows don't go stale, and
+	// scanned files don't push. Files already on the server stay frozen at
+	// their last-synced version until the user archives them manually.
+	const serverManifest = input.serverManifest.filter(
+		(e) => !isExcludedPath(e.path, excluded),
+	);
+	const localManifest = input.localManifest.filter(
+		(r) => !isExcludedPath(r.path, excluded),
+	);
+	const scannedFiles = input.scanned.filter(
+		(f) => !isExcludedPath(f.path, excluded),
+	);
+
 	const serverById = new Map<string, ManifestEntry>();
-	for (const e of input.serverManifest) serverById.set(e.id, e);
+	for (const e of serverManifest) serverById.set(e.id, e);
 
 	const localById = new Map<string, ManifestRecord>();
-	for (const e of input.localManifest) localById.set(e.id, e);
+	for (const e of localManifest) localById.set(e.id, e);
 
 	const scannedByUuid = new Map<string, ScannedFile>();
 	const scannedNoUuid: ScannedFile[] = [];
-	for (const f of input.scanned) {
+	for (const f of scannedFiles) {
 		if (f.uuid) scannedByUuid.set(f.uuid, f);
 		else scannedNoUuid.push(f);
 	}
@@ -92,7 +110,7 @@ export function reconcile(input: ReconcileInput): ReconcileOutput {
 	let conflictCount = 0;
 
 	// Pass 1: every server-known file.
-	for (const serverEntry of input.serverManifest) {
+	for (const serverEntry of serverManifest) {
 		const local = localById.get(serverEntry.id);
 		const scanned = scannedByUuid.get(serverEntry.id);
 

@@ -4,3 +4,8 @@
 	cursor: pointer;
 }
 
+.huma-excluded-folders {
+	width: 100%;
+	font-family: var(--font-monospace);
+}
+

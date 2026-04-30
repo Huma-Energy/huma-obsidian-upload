@@ -30,6 +30,7 @@ After the v1 sync engine lands, the plugin's settings tab will expose:
 - **Server base URL** — the Huma dashboard origin (e.g. `https://huma.energy`).
 - **Sign in / Sign out** — ZITADEL device-flow authentication. Tokens are stored exclusively in Obsidian's plugin data (`data.json`), never in any vault file.
 - **Sync interval** — desktop polling interval (default 30s, min 10s, max 300s). Mobile syncs only on foreground resume and on explicit user commands.
+- **Excluded folders** — vault-relative folder paths whose contents are skipped by sync (one path per line, prefix match). Files already on the server are *not* deleted when a folder is added — they remain frozen at their last-synced version until you archive them on the dashboard.
 
 ## Conflict resolution
 
