@@ -21,34 +21,39 @@
 	font-size: 0.85em;
 }
 
+/* Force horizontal layout for both button rows. !important and high
+   specificity defeat any modal-content rules that might otherwise treat
+   buttons as block-level full-width children. */
+.modal-content .huma-audit-actions,
+.modal-content .huma-audit-filter {
+	display: flex !important;
+	flex-direction: row !important;
+	flex-wrap: nowrap !important;
+	align-items: center;
+}
+
+.modal-content .huma-audit-actions > button,
+.modal-content .huma-audit-filter > button {
+	flex: 0 0 auto !important;
+	width: auto !important;
+	display: inline-block !important;
+	white-space: nowrap;
+}
+
 .huma-audit-actions {
-	display: flex;
 	gap: 8px;
 	margin-bottom: 12px;
-	flex-wrap: nowrap;
 }
 
 .huma-audit-filter {
-	display: flex;
-	flex-wrap: nowrap;
 	gap: 6px;
 	margin-bottom: 8px;
 	overflow-x: auto;
 }
 
-.huma-audit-filter-btn {
-	flex-shrink: 0;
-	white-space: nowrap;
-}
-
 .huma-audit-filter-btn.is-active {
 	background-color: var(--interactive-accent);
 	color: var(--text-on-accent);
-}
-
-.huma-audit-actions > button {
-	flex-shrink: 0;
-	white-space: nowrap;
 }
 
 .huma-audit-row {
