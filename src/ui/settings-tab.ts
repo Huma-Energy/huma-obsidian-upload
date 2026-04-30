@@ -91,12 +91,23 @@ export class HumaSettingsTab extends PluginSettingTab {
 				area.setValue(
 					this.plugin.data.settings.excludedFolders.join("\n"),
 				);
+				// Save the raw text on every keystroke (so partial edits
+				// persist if the user navigates away mid-edit), but only
+				// commit the *normalized* list and surface a Notice when the
+				// user finishes editing — i.e. on blur. Notice-per-keystroke
+				// is noise.
+				let focusSnapshot = this.plugin.data.settings.excludedFolders;
+				area.inputEl.addEventListener("focus", () => {
+					focusSnapshot = this.plugin.data.settings.excludedFolders;
+				});
 				area.onChange(async (value) => {
-					const next = normalizeExcludedFolders(value.split("\n"));
-					const before = this.plugin.data.settings.excludedFolders;
-					this.plugin.data.settings.excludedFolders = next;
+					this.plugin.data.settings.excludedFolders =
+						normalizeExcludedFolders(value.split("\n"));
 					await this.plugin.saveAll();
-					const added = next.filter((f) => !before.includes(f));
+				});
+				area.inputEl.addEventListener("blur", () => {
+					const next = this.plugin.data.settings.excludedFolders;
+					const added = next.filter((f) => !focusSnapshot.includes(f));
 					if (added.length > 0) {
 						new Notice(
 							`Huma: ${added.length} folder(s) excluded from sync. Files already on the server remain — archive them on the dashboard to remove.`,
