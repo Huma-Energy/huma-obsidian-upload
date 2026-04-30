@@ -25,19 +25,30 @@
 	display: flex;
 	gap: 8px;
 	margin-bottom: 12px;
-	flex-wrap: wrap;
+	flex-wrap: nowrap;
 }
 
 .huma-audit-filter {
 	display: flex;
-	flex-wrap: wrap;
+	flex-wrap: nowrap;
 	gap: 6px;
 	margin-bottom: 8px;
+	overflow-x: auto;
+}
+
+.huma-audit-filter-btn {
+	flex-shrink: 0;
+	white-space: nowrap;
 }
 
 .huma-audit-filter-btn.is-active {
 	background-color: var(--interactive-accent);
 	color: var(--text-on-accent);
+}
+
+.huma-audit-actions > button {
+	flex-shrink: 0;
+	white-space: nowrap;
 }
 
 .huma-audit-row {
