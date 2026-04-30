@@ -9,9 +9,10 @@ import {
 	type PushOutcome,
 	type PushWorkerResult,
 } from "./push-worker";
-import { reconcile, type SyncAction } from "./reconcile";
+import { reconcile, type RenameLocalAction, type SyncAction } from "./reconcile";
 import { scanVault, type ScannedFile } from "./scan";
 import { listConflictFiles } from "./conflict";
+import { applyRenameToManifest, processRenameLocal } from "./rename-local";
 import type { SelfWriteTracker } from "./self-write-tracker";
 
 export interface SyncEngineCallbacks {
@@ -99,12 +100,18 @@ export class SyncEngine {
 			const localById = new Map<string, ManifestRecord>();
 			for (const r of localManifest) localById.set(r.id, r);
 
+			const renameLocals: RenameLocalAction[] = [];
 			const pullIds: string[] = [];
 			const pushInputs: PushAttemptInput[] = [];
 			for (const action of actions) {
-				if (action.kind === "pull") pullIds.push(action.serverId);
+				if (action.kind === "rename-local") renameLocals.push(action);
+				else if (action.kind === "pull") pullIds.push(action.serverId);
 				else if (action.kind === "push" || action.kind === "add") {
-					const scannedFile = scannedByPath.get(action.path);
+					const lookupPath =
+						action.kind === "push" && action.serverId
+							? localById.get(action.serverId)?.path ?? action.path
+							: action.path;
+					const scannedFile = scannedByPath.get(lookupPath);
 					if (!scannedFile) continue;
 					const local =
 						action.kind === "push" && action.serverId
@@ -116,6 +123,27 @@ export class SyncEngine {
 
 			let pullResult: PullResult | null = null;
 			let manifestSnapshot: ManifestRecord[] = [...localManifest];
+
+			// Process server-side renames first — reconcile already ordered
+			// them ahead of pulls so a same-cycle pull writes the body at the
+			// post-rename path.
+			const renameAuditEntries: AuditEntry[] = [];
+			for (const action of renameLocals) {
+				const outcome = await processRenameLocal(app, action, this.deps.tracker);
+				if (outcome.result.kind === "renamed") {
+					manifestSnapshot = applyRenameToManifest(manifestSnapshot, action);
+					renameAuditEntries.push({
+						timestamp: new Date().toISOString(),
+						event: "path_change",
+						path: action.toPath,
+						id: action.serverId,
+						detail: `renamed from ${action.fromPath}`,
+					});
+				}
+			}
+			if (renameAuditEntries.length > 0) {
+				await this.deps.saveManifest(manifestSnapshot);
+			}
 
 			if (pullIds.length > 0) {
 				pullResult = await runPullWorker(
@@ -158,11 +186,14 @@ export class SyncEngine {
 				);
 			}
 
-			const audit: AuditEntry[] = collectAudit(
-				pushResult?.outcomes ?? [],
-				pullResult?.audit ?? [],
-				stats,
-			);
+			const audit: AuditEntry[] = [
+				...renameAuditEntries,
+				...collectAudit(
+					pushResult?.outcomes ?? [],
+					pullResult?.audit ?? [],
+					stats,
+				),
+			];
 
 			await this.deps.saveManifest(manifestSnapshot);
 			if (audit.length > 0) await this.deps.appendAudit(audit);

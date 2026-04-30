@@ -5,6 +5,7 @@ import type { AuditEntry, PushRequest, PushResponse } from "../types";
 import { emitConflict } from "./conflict";
 import {
 	HUMA_UUID_KEY,
+	parseFile,
 	replaceFileBody,
 	stringifyFile,
 	withHumaUuid,
@@ -181,7 +182,9 @@ async function applyResponse(
 				response.id,
 			);
 			const text = stringifyFile(response.body, frontmatter);
-			const hashBeforeWrite = await sha256Hex(response.body);
+			// Hash the parsed-back body so subsequent scans match this entry.
+			const onDiskBody = parseFile(text).body;
+			const hashBeforeWrite = await sha256Hex(onDiskBody);
 			tracker.record(path, hashBeforeWrite);
 			await writeMarkdown(app, path, text);
 			const hash = hashBeforeWrite;
@@ -215,7 +218,17 @@ async function applyResponse(
 				},
 				tracker,
 			);
-			const hash = await sha256Hex(response.server_body);
+			// Hash the parsed-back body of the server-replaced original so the
+			// next scan agrees with this manifest entry.
+			const replacedFrontmatter = withHumaUuid(
+				response.server_frontmatter ?? {},
+				response.id,
+			);
+			const replacedText = stringifyFile(
+				response.server_body,
+				replacedFrontmatter,
+			);
+			const hash = await sha256Hex(parseFile(replacedText).body);
 			const record: ManifestRecord = {
 				id: response.id,
 				path,

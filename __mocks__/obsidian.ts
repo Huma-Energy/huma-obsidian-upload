@@ -92,6 +92,21 @@ export class MockVault {
 		this.folders.add(path);
 	}
 
+	async renameTFile(file: TFile, newPath: string): Promise<void> {
+		const entry = this.files.get(file.path);
+		if (!entry) throw new Error(`No such file: ${file.path}`);
+		this.files.delete(file.path);
+		file.path = newPath;
+		const slash = newPath.lastIndexOf("/");
+		const dot = newPath.lastIndexOf(".");
+		file.basename = newPath.slice(
+			slash + 1,
+			dot > slash ? dot : newPath.length,
+		);
+		file.extension = dot > slash ? newPath.slice(dot + 1) : "";
+		this.files.set(newPath, entry);
+	}
+
 	on(_event: string, _handler: unknown): { unload(): void } {
 		return { unload() {} };
 	}
@@ -136,6 +151,9 @@ export class MockFileManager {
 				? parsed.content
 				: matter.stringify(parsed.content, fm);
 		await this.vault.modify(file, next);
+	}
+	async renameFile(file: TFile, newPath: string): Promise<void> {
+		await this.vault.renameTFile(file, newPath);
 	}
 }
 

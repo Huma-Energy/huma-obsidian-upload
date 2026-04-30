@@ -1,5 +1,10 @@
 import { normalizePath, type App, type TFile } from "obsidian";
-import { replaceFileBody, stringifyFile, withHumaUuid } from "./frontmatter";
+import {
+	parseFile,
+	replaceFileBody,
+	stringifyFile,
+	withHumaUuid,
+} from "./frontmatter";
 import { sha256Hex } from "./hash";
 import type { SelfWriteTracker } from "./self-write-tracker";
 
@@ -33,9 +38,16 @@ export async function emitConflict(
 	const originalPath = normalizePath(merge.path);
 	const conflictPath = conflictPathFor(originalPath);
 	const conflictBody = formatConflictBody(merge.localBody, merge.serverBody);
+
+	const original = app.vault.getAbstractFileByPath(originalPath);
+	const frontmatter = withHumaUuid(merge.serverFrontmatter ?? {}, merge.id);
+	const text = stringifyFile(merge.serverBody, frontmatter);
+
+	// Hash the parsed-back body the file will actually contain so the next
+	// scan agrees with what we recorded in the tracker.
 	const [conflictHash, serverHash] = await Promise.all([
 		sha256Hex(conflictBody),
-		sha256Hex(merge.serverBody),
+		sha256Hex(parseFile(text).body),
 	]);
 
 	tracker.record(conflictPath, conflictHash);
@@ -50,9 +62,6 @@ export async function emitConflict(
 		await app.vault.create(conflictPath, conflictBody);
 	}
 
-	const original = app.vault.getAbstractFileByPath(originalPath);
-	const frontmatter = withHumaUuid(merge.serverFrontmatter ?? {}, merge.id);
-	const text = stringifyFile(merge.serverBody, frontmatter);
 	tracker.record(originalPath, serverHash);
 	if (original && isMarkdownTFile(original)) {
 		await replaceFileBody(app, original, text);
