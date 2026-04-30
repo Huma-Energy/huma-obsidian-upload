@@ -105,22 +105,33 @@ export class AuditLogModal extends Modal {
 		// list — createDiv inserts in DOM order, so move list after filterBar.
 		contentEl.insertBefore(filterBar, list);
 
-		// Build rows newest-first.
+		// Build rows newest-first. title attributes give the full untruncated
+		// value on hover for cells that ellipsis-clip on narrow modals.
 		for (const e of [...this.entries].reverse()) {
 			const sev = severityFor(e.event);
 			const row = list.createDiv({
 				cls: `huma-audit-row huma-severity-${sev}`,
 			});
-			row.createSpan({ cls: "huma-audit-ts", text: e.timestamp });
+			row.createSpan({
+				cls: "huma-audit-ts",
+				text: formatTimestamp(e.timestamp),
+				attr: { title: e.timestamp },
+			});
 			row.createSpan({ cls: "huma-audit-event", text: e.event });
 			row.createSpan({
 				cls: "huma-audit-id",
 				text: e.id ?? "",
+				attr: e.id ? { title: e.id } : {},
 			});
-			row.createSpan({ cls: "huma-audit-path", text: e.path });
+			row.createSpan({
+				cls: "huma-audit-path",
+				text: e.path,
+				attr: { title: e.path },
+			});
 			row.createSpan({
 				cls: "huma-audit-detail",
 				text: e.detail ?? "",
+				attr: e.detail ? { title: e.detail } : {},
 			});
 		}
 
@@ -141,6 +152,20 @@ export function renderAuditPlainText(entries: readonly AuditEntry[]): string {
 			return `${e.timestamp} ${e.event}${id} ${e.path}${detail}`;
 		})
 		.join("\n");
+}
+
+function formatTimestamp(iso: string): string {
+	const d = new Date(iso);
+	if (Number.isNaN(d.getTime())) return iso;
+	const pad = (n: number) => n.toString().padStart(2, "0");
+	const today = new Date();
+	const sameDay =
+		d.getFullYear() === today.getFullYear() &&
+		d.getMonth() === today.getMonth() &&
+		d.getDate() === today.getDate();
+	const time = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+	if (sameDay) return time;
+	return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${time}`;
 }
 
 function severityFor(event: AuditEvent): Severity {
