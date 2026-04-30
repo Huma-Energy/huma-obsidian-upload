@@ -39,7 +39,29 @@ export class HumaSettingsTab extends PluginSettingTab {
 		this.renderAuthSection(containerEl);
 		this.renderSyncIntervalSection(containerEl);
 		this.renderExclusionsSection(containerEl);
+		this.renderObsidianSyncSection(containerEl);
 		this.renderSyncLogSection(containerEl);
+	}
+
+	private renderObsidianSyncSection(containerEl: HTMLElement): void {
+		const sync = getInternalSyncPlugin(this.app);
+		if (!sync) return;
+		new Setting(containerEl)
+			.setName("Disable Obsidian Sync")
+			.setDesc(
+				"Obsidian's built-in Sync core plugin shows a status icon for its remote-vault subscription. If you don't use Obsidian Sync, disable it here so its icon doesn't sit next to Huma's status and look like a sync error.",
+			)
+			.addToggle((toggle) =>
+				toggle.setValue(!sync.enabled).onChange(async (disabled) => {
+					if (disabled) {
+						await sync.disable?.();
+						new Notice("Obsidian Sync core plugin disabled.", 3000);
+					} else {
+						await sync.enable?.();
+						new Notice("Obsidian Sync core plugin enabled.", 3000);
+					}
+				}),
+			);
 	}
 
 	private renderSyncLogSection(containerEl: HTMLElement): void {
@@ -177,4 +199,29 @@ function authDescription(
 function describeError(err: unknown): string {
 	if (err instanceof Error) return err.message;
 	return String(err);
+}
+
+// Obsidian's internal-plugin registry is not part of the public typings.
+// We touch it solely to read/toggle the core Sync plugin's enabled state.
+// Returns null if the API shape isn't what we expect — the toggle then
+// silently doesn't render rather than throwing.
+interface InternalSyncPlugin {
+	enabled: boolean;
+	enable?(): Promise<void> | void;
+	disable?(): Promise<void> | void;
+}
+
+interface InternalPluginRegistry {
+	getPluginById?(id: string): InternalSyncPlugin | undefined;
+	plugins?: Record<string, InternalSyncPlugin | undefined>;
+}
+
+function getInternalSyncPlugin(app: App): InternalSyncPlugin | null {
+	const registry = (app as unknown as { internalPlugins?: InternalPluginRegistry })
+		.internalPlugins;
+	if (!registry) return null;
+	const sync = registry.getPluginById
+		? registry.getPluginById("sync")
+		: registry.plugins?.sync;
+	return sync ?? null;
 }
