@@ -47,9 +47,7 @@ export class AuditLogModal extends Modal {
 		});
 
 		const actions = contentEl.createDiv({ cls: "huma-audit-actions" });
-		const copyBtn = actions.createEl("button", {
-			text: "Copy all to clipboard",
-		});
+		const copyBtn = actions.createEl("button", { text: "Copy" });
 		copyBtn.addEventListener("click", () => {
 			void (async () => {
 				await navigator.clipboard.writeText(
