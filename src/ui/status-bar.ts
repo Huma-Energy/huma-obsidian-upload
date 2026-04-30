@@ -41,6 +41,8 @@ export function attachStatusBar(el: HTMLElement): StatusBarHandle {
 			for (const cls of STATE_CLASSES) el.removeClass(cls);
 			el.addClass(`huma-status--${state.kind}`);
 
+			el.createSpan({ cls: "huma-status-prefix", text: "Huma" });
+
 			const iconEl = el.createSpan({ cls: "huma-status-icon" });
 			setIcon(iconEl, iconForState(state));
 

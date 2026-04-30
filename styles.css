@@ -17,8 +17,13 @@
 	height: 14px;
 }
 
+.huma-status-prefix {
+	font-weight: 500;
+}
+
 .huma-status-label {
 	font-size: 0.85em;
+	color: var(--text-muted);
 }
 
 .huma-status--idle .huma-status-icon { color: var(--text-muted); }
