@@ -13,7 +13,7 @@ const FILTERS: { id: "all" | Severity; label: string }[] = [
 	{ id: "all", label: "All" },
 	{ id: "error", label: "Errors" },
 	{ id: "warning", label: "Warnings" },
-	{ id: "info", label: "Sync events" },
+	{ id: "info", label: "Sync" },
 ];
 
 export class AuditLogModal extends Modal {
