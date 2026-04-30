@@ -21,6 +21,13 @@
 	font-size: 0.85em;
 }
 
+.huma-audit-actions {
+	display: flex;
+	gap: 8px;
+	margin-bottom: 12px;
+	flex-wrap: wrap;
+}
+
 .huma-audit-filter {
 	display: flex;
 	flex-wrap: wrap;
