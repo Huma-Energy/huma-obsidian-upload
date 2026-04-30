@@ -9,3 +9,10 @@
 	font-family: var(--font-monospace);
 }
 
+.huma-audit-log {
+	user-select: text;
+	cursor: text;
+	max-height: 60vh;
+	overflow-y: auto;
+}
+

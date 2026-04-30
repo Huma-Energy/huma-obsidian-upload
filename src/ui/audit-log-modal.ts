@@ -1,4 +1,4 @@
-import { App, MarkdownRenderer, Modal, type Component } from "obsidian";
+import { App, MarkdownRenderer, Modal, Notice, Setting, type Component } from "obsidian";
 import type { AuditEntry } from "../types";
 
 export class AuditLogModal extends Modal {
@@ -28,6 +28,19 @@ export class AuditLogModal extends Modal {
 			`Showing the last ${this.entries.length} actions from this device's local audit ring (capped at 200). The server's audit log is the canonical record.`,
 		);
 
+		new Setting(contentEl).addButton((btn) =>
+			btn
+				.setButtonText("Copy all to clipboard")
+				.onClick(async () => {
+					const text = renderAuditPlainText(this.entries);
+					await navigator.clipboard.writeText(text);
+					new Notice(
+						`Huma: copied ${this.entries.length} sync log entries.`,
+						3000,
+					);
+				}),
+		);
+
 		const md = renderAuditMarkdown(this.entries);
 		const container = contentEl.createDiv({ cls: "huma-audit-log" });
 		void MarkdownRenderer.render(this.app, md, container, "/", this.owner);
@@ -36,6 +49,17 @@ export class AuditLogModal extends Modal {
 	onClose(): void {
 		this.contentEl.empty();
 	}
+}
+
+export function renderAuditPlainText(entries: readonly AuditEntry[]): string {
+	return [...entries]
+		.reverse()
+		.map((e) => {
+			const id = e.id ? ` ${e.id}` : "";
+			const detail = e.detail ? ` — ${e.detail}` : "";
+			return `${e.timestamp} ${e.event}${id} ${e.path}${detail}`;
+		})
+		.join("\n");
 }
 
 export function renderAuditMarkdown(entries: readonly AuditEntry[]): string {
