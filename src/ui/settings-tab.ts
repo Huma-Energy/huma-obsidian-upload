@@ -3,6 +3,7 @@ import {
 	SYNC_INTERVAL_MAX_SECONDS,
 	SYNC_INTERVAL_MIN_SECONDS,
 } from "../settings";
+import { normalizeExcludedFolders } from "../sync/exclusion";
 import type HumaVaultSyncPlugin from "../main";
 
 export class HumaSettingsTab extends PluginSettingTab {
@@ -37,6 +38,7 @@ export class HumaSettingsTab extends PluginSettingTab {
 
 		this.renderAuthSection(containerEl);
 		this.renderSyncIntervalSection(containerEl);
+		this.renderExclusionsSection(containerEl);
 	}
 
 	private renderAuthSection(containerEl: HTMLElement): void {
@@ -75,6 +77,36 @@ export class HumaSettingsTab extends PluginSettingTab {
 				}),
 			);
 		}
+	}
+
+	private renderExclusionsSection(containerEl: HTMLElement): void {
+		new Setting(containerEl)
+			.setName("Excluded folders")
+			.setDesc(
+				"One vault-relative folder path per line. Files inside these folders will not sync. Existing copies on the server are not deleted when a folder is added here — archive them on the dashboard if you want them removed.",
+			)
+			.addTextArea((area) => {
+				// eslint-disable-next-line obsidianmd/ui/sentence-case -- folder-path examples, not UI prose
+				area.setPlaceholder("drafts\nbusiness/private");
+				area.setValue(
+					this.plugin.data.settings.excludedFolders.join("\n"),
+				);
+				area.onChange(async (value) => {
+					const next = normalizeExcludedFolders(value.split("\n"));
+					const before = this.plugin.data.settings.excludedFolders;
+					this.plugin.data.settings.excludedFolders = next;
+					await this.plugin.saveAll();
+					const added = next.filter((f) => !before.includes(f));
+					if (added.length > 0) {
+						new Notice(
+							`Huma: ${added.length} folder(s) excluded from sync. Files already on the server remain — archive them on the dashboard to remove.`,
+							8000,
+						);
+					}
+				});
+				area.inputEl.rows = 4;
+				area.inputEl.addClass("huma-excluded-folders");
+			});
 	}
 
 	private renderSyncIntervalSection(containerEl: HTMLElement): void {

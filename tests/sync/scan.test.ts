@@ -93,4 +93,27 @@ describe("scanVault", () => {
 		const paths = result.map((r) => r.path);
 		expect(paths).toEqual(["a.md"]);
 	});
+
+	it("skips files inside excluded folders", async () => {
+		const vault = new MockVault();
+		vault.addFile("notes/a.md", "alpha");
+		vault.addFile("drafts/b.md", "beta");
+		vault.addFile("drafts/sub/c.md", "gamma");
+		vault.addFile("draftsy/d.md", "delta"); // similar prefix, must NOT match
+		const app: MockApp = {
+			vault,
+			fileManager: new MockFileManager(vault),
+			workspace: {
+				onLayoutReady() {},
+				on() { return { unload() {} }; },
+				getLeaf() { return { async openFile() {} }; },
+			},
+		};
+		const result = await scanVault(
+			app as unknown as Parameters<typeof scanVault>[0],
+			["drafts"],
+		);
+		const paths = result.map((r) => r.path).sort();
+		expect(paths).toEqual(["draftsy/d.md", "notes/a.md"]);
+	});
 });

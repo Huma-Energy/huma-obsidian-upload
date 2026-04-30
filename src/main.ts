@@ -128,6 +128,7 @@ export default class HumaVaultSyncPlugin extends Plugin {
 				this.data.lastSince = iso;
 				await this.saveAll();
 			},
+			getExcludedFolders: () => this.data.settings.excludedFolders,
 			callbacks: {
 				onState: (state) => this.onEngineState(state),
 			},

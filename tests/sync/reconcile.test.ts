@@ -150,4 +150,34 @@ describe("reconcile", () => {
 		const b = reconcile(input);
 		expect(a.actions.map((x) => x.id)).toEqual(b.actions.map((x) => x.id));
 	});
+
+	it("emits no actions for server entries inside an excluded folder", () => {
+		const out = reconcile({
+			serverManifest: [
+				serverEntry({ id: "id-x", path: "drafts/secret.md", version: 5 }),
+			],
+			localManifest: [
+				localRecord({ id: "id-x", path: "drafts/secret.md", version: 4 }),
+			],
+			scanned: [],
+			excludedFolders: ["drafts"],
+		});
+		expect(out.actions).toEqual([]);
+		expect(out.stats).toMatchObject({
+			pull: 0,
+			push: 0,
+			staleLocalDelete: 0,
+			serverDeleted: 0,
+		});
+	});
+
+	it("does not push a scanned file inside an excluded folder", () => {
+		const out = reconcile({
+			serverManifest: [],
+			localManifest: [],
+			scanned: [scanned({ uuid: null, path: "drafts/new.md" })],
+			excludedFolders: ["drafts"],
+		});
+		expect(out.actions).toEqual([]);
+	});
 });

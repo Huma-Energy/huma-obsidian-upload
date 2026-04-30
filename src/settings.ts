@@ -20,6 +20,11 @@ export interface HumaPluginData {
 export interface HumaSettings {
 	serverBaseUrl: string;
 	syncIntervalSeconds: number;
+	// Vault-relative folder paths whose contents are skipped by sync. Files
+	// already on the server are NOT deleted when their folder is excluded —
+	// they remain on the server, frozen at their last-synced version, until
+	// archived manually. Prefix match: "drafts" excludes "drafts/note.md".
+	excludedFolders: string[];
 }
 
 // Forward-declared shape used by sync code in later tasks. Defined here so the
@@ -35,6 +40,7 @@ export interface ManifestRecord {
 export const DEFAULT_SETTINGS: HumaSettings = {
 	serverBaseUrl: "https://huma.energy",
 	syncIntervalSeconds: 30,
+	excludedFolders: [],
 };
 
 export const SYNC_INTERVAL_MIN_SECONDS = 10;
