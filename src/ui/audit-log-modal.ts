@@ -18,10 +18,16 @@ const FILTERS: { id: "all" | Severity; label: string }[] = [
 
 export class AuditLogModal extends Modal {
 	private readonly entries: readonly AuditEntry[];
+	private readonly onClear?: () => Promise<void>;
 
-	constructor(app: App, entries: readonly AuditEntry[]) {
+	constructor(
+		app: App,
+		entries: readonly AuditEntry[],
+		onClear?: () => Promise<void>,
+	) {
 		super(app);
 		this.entries = entries;
+		this.onClear = onClear;
 	}
 
 	onOpen(): void {
@@ -40,7 +46,8 @@ export class AuditLogModal extends Modal {
 			text: `Showing the last ${this.entries.length} actions from this device's local audit ring (capped at 200). The server's audit log is the canonical record.`,
 		});
 
-		new Setting(contentEl).addButton((btn) =>
+		const actions = new Setting(contentEl);
+		actions.addButton((btn) =>
 			btn.setButtonText("Copy all to clipboard").onClick(async () => {
 				await navigator.clipboard.writeText(
 					renderAuditPlainText(this.entries),
@@ -51,6 +58,21 @@ export class AuditLogModal extends Modal {
 				);
 			}),
 		);
+		if (this.onClear) {
+			actions.addButton((btn) =>
+				btn
+					.setButtonText("Clear")
+					.setWarning()
+					.onClick(async () => {
+						const count = this.entries.length;
+						await this.onClear?.();
+						new Notice(`Huma: cleared ${count} sync log entries.`, 3000);
+						// Re-render with the now-empty ring; onOpen handles
+						// the empty-state message.
+						this.onOpen();
+					}),
+			);
+		}
 
 		const list = contentEl.createDiv({ cls: "huma-audit-log" });
 		const filterBar = contentEl.createDiv({ cls: "huma-audit-filter" });
