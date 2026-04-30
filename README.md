@@ -4,7 +4,7 @@ Bidirectional sync between an [Obsidian](https://obsidian.md) vault and the [Hum
 
 Edit notes locally in Obsidian (online or offline) and keep them in lockstep with the Huma web app. Identity is a UUID written into each note's frontmatter (`huma_uuid`), so renames don't break sync. Authentication uses the ZITADEL device-authorization grant — no token ever touches the vault.
 
-> **Status:** v0.1.0 — pre-release. Task 1 scaffold only (smoke load + status-bar message). Sync engine ships in subsequent tasks.
+> **Status:** v0.1.0 — pre-release. The full sync engine ships: bidirectional pull/push with manifest reconciliation, three-way conflict emission to sibling `*.conflict.md` files, server-side three-way merge, ZITADEL device-flow sign-in, audit ring, and a vault-token-leak startup invariant. See `docs/MOBILE-QA.md` for the manual mobile verification matrix.
 
 ## Install (BRAT, beta sideload)
 
@@ -19,7 +19,9 @@ BRAT will auto-update the plugin from each new GitHub release.
 
 ## Platforms
 
-The plugin runs on macOS desktop, Linux desktop, iOS Obsidian, and Android Obsidian (`isDesktopOnly: false`). Mobile parity is a v1 requirement — the plugin uses only Obsidian's documented Plugin API and standard `fetch` / `crypto`, no Node-only APIs.
+The plugin runs on macOS desktop, Linux desktop, iOS Obsidian, and Android Obsidian (`isDesktopOnly: false`). Mobile parity is a v1 requirement — the plugin uses only Obsidian's documented Plugin API (`requestUrl` for HTTP, `Vault.process` / `FileManager.processFrontMatter` for atomic file writes) and Web Crypto for hashing. No Node or Electron APIs.
+
+On desktop, sync state surfaces in the status bar. Obsidian does not support custom status-bar items on mobile, so on iOS and Android the plugin instead exposes a ribbon icon that opens a status modal with **Sync now** / **Resolve conflicts** / **Show sync log** buttons.
 
 ## Settings
 
@@ -60,6 +62,14 @@ npm test
 ```
 
 Build output is `main.js` at the repo root, alongside `manifest.json` (Obsidian's required layout). To load locally during development, symlink (or copy) the repo into `<vault>/.obsidian/plugins/huma-vault-sync/`, then enable it in Obsidian.
+
+## Security
+
+Vulnerability disclosure process and the plugin's security model are documented in [SECURITY.md](./SECURITY.md). Do not file public issues for suspected security findings.
+
+## Changelog
+
+Release notes live in [CHANGELOG.md](./CHANGELOG.md).
 
 ## License
 

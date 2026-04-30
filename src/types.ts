@@ -103,7 +103,8 @@ export type AuditEvent =
 	| "push_reject"
 	| "merge_clean"
 	| "merge_dirty"
-	| "path_change";
+	| "path_change"
+	| "pull_apply";
 
 export interface AuditEntry {
 	timestamp: string;

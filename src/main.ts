@@ -1,11 +1,11 @@
-import { Notice, Platform, Plugin, type TAbstractFile, type WorkspaceLeaf } from "obsidian";
+import { Notice, Platform, Plugin, TFile, type TAbstractFile, type WorkspaceLeaf } from "obsidian";
 import {
 	DEFAULT_PLUGIN_DATA,
 	type HumaPluginData,
 	type ManifestRecord,
 	type StoredTokens,
 } from "./settings";
-import { FetchHttpClient } from "./client/http";
+import { FetchHttpClient, HttpError } from "./client/http";
 import { AuthClient, runDevicePollLoop } from "./client/auth";
 import { VaultApiClient } from "./client/vault-api";
 import { TokenManager } from "./sync/token-manager";
@@ -13,9 +13,13 @@ import { SyncEngine, type EngineState } from "./sync/engine";
 import { HumaSettingsTab } from "./ui/settings-tab";
 import { attachStatusBar, type StatusBarHandle } from "./ui/status-bar";
 import { AuditLogModal } from "./ui/audit-log-modal";
+import { MobileStatusModal } from "./ui/mobile-status-modal";
 import { listConflictFiles } from "./sync/conflict";
 import { scanVaultForTokens } from "./security/vault-token-scan";
 import { pushAuditMany } from "./audit/ring";
+import { parseFile } from "./sync/frontmatter";
+import { sha256Hex } from "./sync/hash";
+import { SelfWriteTracker } from "./sync/self-write-tracker";
 import type { AuditEntry } from "./types";
 
 const PLUGIN_USER_AGENT = "Huma Obsidian Plugin v0.1.0";
@@ -33,29 +37,51 @@ export default class HumaVaultSyncPlugin extends Plugin {
 	private startupBlocked = false;
 	private lastSyncedAt: string | null = null;
 	private pollHandle: number | null = null;
+	private currentState: EngineState | { kind: "signed-out" } = { kind: "signed-out" };
+	private readonly selfWriteTracker = new SelfWriteTracker();
 
 	async onload(): Promise<void> {
 		await this.loadAll();
 		this.rebuildClients();
-		const statusBarEl = this.addStatusBarItem();
-		this.statusBar = attachStatusBar(statusBarEl);
-		this.statusBar.onClick((state) => {
-			if (state.kind === "error" || state.kind === "conflict") {
-				this.openAuditLog();
-			} else {
-				// Open settings tab; Obsidian doesn't expose a programmatic
-				// "open my settings tab" so we fall back to the global one.
-				(this.app as unknown as { setting?: { open(): void } }).setting?.open();
-			}
-		});
+		// Status bar is desktop-only per Obsidian's status bar docs. On mobile
+		// we render feedback through a ribbon icon + state modal instead.
+		if (!Platform.isMobile) {
+			const statusBarEl = this.addStatusBarItem();
+			this.statusBar = attachStatusBar(statusBarEl);
+			this.statusBar.onClick((state) => {
+				if (state.kind === "error" || state.kind === "conflict") {
+					this.openAuditLog();
+				} else {
+					new Notice(
+						"Huma: open the plugin settings to manage sync.",
+						4000,
+					);
+				}
+			});
+		} else {
+			this.addRibbonIcon("refresh-cw", "Huma sync", () => {
+				this.openMobileStatus();
+			});
+		}
 
 		this.addSettingTab(new HumaSettingsTab(this.app, this));
 		this.registerCommands();
-		this.registerVaultEventHooks();
 
+		// Vault event handlers must register inside onLayoutReady — see
+		// "Optimize plugin load time" docs: at cold start Obsidian fires
+		// `create` for every existing file, which would falsely schedule a
+		// sync per file before the workspace is ready.
 		this.app.workspace.onLayoutReady(() => {
+			this.registerVaultEventHooks();
 			void this.startup();
 		});
+
+		// Self-write tracker entries can leak if a recorded write doesn't
+		// produce a matching modify event (Obsidian sometimes coalesces).
+		// Periodic prune is cheap and bounds memory.
+		this.registerInterval(
+			window.setInterval(() => this.selfWriteTracker.pruneExpired(), 60_000),
+		);
 
 		this.renderStatusBar({ kind: "signed-out" });
 	}
@@ -87,6 +113,7 @@ export default class HumaVaultSyncPlugin extends Plugin {
 		this.engine = new SyncEngine({
 			api: this.vaultApi,
 			app: this.app,
+			tracker: this.selfWriteTracker,
 			getManifest: () => this.data.manifest,
 			saveManifest: async (records: ManifestRecord[]) => {
 				this.data.manifest = records;
@@ -113,6 +140,7 @@ export default class HumaVaultSyncPlugin extends Plugin {
 	}
 
 	private renderStatusBar(state: EngineState | { kind: "signed-out" } | { kind: "blocked"; reason: string }): void {
+		if (state.kind !== "blocked") this.currentState = state;
 		if (!this.statusBar) return;
 		switch (state.kind) {
 			case "blocked":
@@ -243,8 +271,10 @@ export default class HumaVaultSyncPlugin extends Plugin {
 		this.stopPolling();
 		const tokens = this.data.tokens;
 		this.data.tokens = null;
-		this.data.manifest = [];
-		this.data.lastSince = null;
+		// Manifest, lastSince, and audit ring describe local sync state, not
+		// auth state. Preserve them across sign-out so re-signing-in is a fast
+		// no-op rather than a full vault rehash. Use the
+		// "huma:reset-local-state" command to wipe them explicitly.
 		await this.saveAll();
 		this.renderStatusBar({ kind: "signed-out" });
 		if (tokens && this.http) {
@@ -261,13 +291,20 @@ export default class HumaVaultSyncPlugin extends Plugin {
 		new Notice("Huma: signed out.", 3000);
 	}
 
+	async resetLocalState(): Promise<void> {
+		this.data.manifest = [];
+		this.data.lastSince = null;
+		this.data.auditRing = [];
+		await this.saveAll();
+		new Notice("Huma: local sync state cleared.", 3000);
+	}
+
 	async runFullSync(): Promise<void> {
 		if (!this.engine || !this.data.tokens || this.startupBlocked) return;
 		try {
 			await this.engine.runSync();
 		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
-			new Notice(`Huma sync failed: ${message}`, 6000);
+			new Notice(classifyErrorForUser(err), 6000);
 		}
 	}
 
@@ -302,7 +339,11 @@ export default class HumaVaultSyncPlugin extends Plugin {
 			if (!this.engine || !this.data.tokens || this.startupBlocked) return;
 			this.engine.scheduleDebouncedSync(VAULT_DEBOUNCE_MS);
 		};
-		this.registerEvent(this.app.vault.on("modify", (_f: TAbstractFile) => debounce()));
+		this.registerEvent(
+			this.app.vault.on("modify", (f: TAbstractFile) => {
+				void this.handleModifyEvent(f, debounce);
+			}),
+		);
 		this.registerEvent(this.app.vault.on("create", (_f: TAbstractFile) => debounce()));
 		this.registerEvent(this.app.vault.on("delete", (_f: TAbstractFile) => debounce()));
 		this.registerEvent(this.app.vault.on("rename", (_f: TAbstractFile, _old: string) => debounce()));
@@ -318,36 +359,85 @@ export default class HumaVaultSyncPlugin extends Plugin {
 		}
 	}
 
+	private async handleModifyEvent(
+		f: TAbstractFile,
+		debounce: () => void,
+	): Promise<void> {
+		if (!(f instanceof TFile) || f.extension !== "md") {
+			debounce();
+			return;
+		}
+		// Hot path: most modify events come from the user, not us. Skip
+		// reading + hashing unless the tracker has a pending write recorded
+		// for this exact path.
+		if (!this.selfWriteTracker.hasPath(f.path)) {
+			debounce();
+			return;
+		}
+		const text = await this.app.vault.cachedRead(f);
+		const { body } = parseFile(text);
+		const hash = await sha256Hex(body);
+		if (this.selfWriteTracker.consume(f.path, hash)) return;
+		debounce();
+	}
+
 	private registerCommands(): void {
+		// Plugin guidelines: command ids must NOT include the plugin id prefix —
+		// Obsidian prepends it automatically (final id is e.g.
+		// "huma-vault-sync:sync-now"). UI text uses sentence case.
 		this.addCommand({
-			id: "huma-sync-now",
+			id: "sync-now",
 			name: "Sync now",
 			callback: () => void this.runFullSync(),
 		});
 		this.addCommand({
-			id: "huma-sign-in-out",
-			name: "Sign in / Sign out",
-			callback: async () => {
-				try {
-					if (this.data.tokens) await this.signOut();
-					else await this.signIn();
-				} catch (err) {
-					const message = err instanceof Error ? err.message : String(err);
-					new Notice(`Huma: ${message}`, 6000);
+			id: "sign-in",
+			name: "Sign in",
+			checkCallback: (checking: boolean) => {
+				if (this.data.tokens) return false;
+				if (!checking) {
+					void this.signIn().catch((err) =>
+						new Notice(classifyErrorForUser(err), 6000),
+					);
 				}
+				return true;
 			},
 		});
 		this.addCommand({
-			id: "huma-resolve-conflicts",
-			name: "Resolve conflicts",
-			callback: () => void this.openNextConflict(),
+			id: "sign-out",
+			name: "Sign out",
+			checkCallback: (checking: boolean) => {
+				if (!this.data.tokens) return false;
+				if (!checking) {
+					void this.signOut().catch((err) =>
+						new Notice(classifyErrorForUser(err), 6000),
+					);
+				}
+				return true;
+			},
 		});
 		this.addCommand({
-			id: "huma-show-sync-log",
+			id: "resolve-conflicts",
+			name: "Resolve conflicts",
+			checkCallback: (checking: boolean) => {
+				const has = listConflictFiles(this.app).length > 0;
+				if (!has) return false;
+				if (!checking) void this.openNextConflict();
+				return true;
+			},
+		});
+		this.addCommand({
+			id: "show-sync-log",
 			name: "Show sync log",
 			callback: () => this.openAuditLog(),
 		});
+		this.addCommand({
+			id: "reset-local-state",
+			name: "Reset local sync state",
+			callback: () => void this.resetLocalState(),
+		});
 	}
+
 
 	private async openNextConflict(): Promise<void> {
 		const conflicts = listConflictFiles(this.app);
@@ -367,6 +457,37 @@ export default class HumaVaultSyncPlugin extends Plugin {
 	private openAuditLog(): void {
 		new AuditLogModal(this.app, this.data.auditRing, this).open();
 	}
+
+	private openMobileStatus(): void {
+		new MobileStatusModal(this.app, {
+			getState: () => this.currentState,
+			getLastSyncedAt: () => this.lastSyncedAt,
+			getConflictCount: () => listConflictFiles(this.app).length,
+			onSyncNow: () => void this.runFullSync(),
+			onResolveConflicts: () => void this.openNextConflict(),
+			onOpenLog: () => this.openAuditLog(),
+		}).open();
+	}
+}
+
+// Maps raw errors from the sync engine into user-facing messages. Keep the
+// classification narrow — anything unrecognized falls back to the generic
+// "Huma sync failed" so we never silently swallow a real failure.
+export function classifyErrorForUser(err: unknown): string {
+	if (err instanceof HttpError) {
+		if (err.status === 401 || err.apiError?.error === "invalid_token") {
+			return "Huma: signed out — please sign in again.";
+		}
+		if (err.status >= 500) {
+			return "Huma: server error, will retry.";
+		}
+		return `Huma: ${err.message}`;
+	}
+	if (err instanceof TypeError && /fetch/i.test(err.message)) {
+		return "Huma: server unreachable.";
+	}
+	const message = err instanceof Error ? err.message : String(err);
+	return `Huma sync failed: ${message}`;
 }
 
 function mergeData(stored: Partial<HumaPluginData> | null): HumaPluginData {

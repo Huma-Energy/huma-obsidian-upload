@@ -1,6 +1,7 @@
 import type { App, TFile } from "obsidian";
 import { parseFile, readHumaUuid } from "./frontmatter";
 import { sha256Hex } from "./hash";
+import { CONFLICT_SUFFIX } from "./conflict";
 
 export interface ScannedFile {
 	uuid: string | null;
@@ -25,9 +26,10 @@ export async function scanVault(vault: VaultLike): Promise<ScannedFile[]>;
 export async function scanVault(
 	source: App | VaultLike,
 ): Promise<ScannedFile[]> {
-	const vault: VaultLike =
-		"vault" in source ? (source as App).vault : source;
-	const files = vault.getMarkdownFiles();
+	const vault: VaultLike = "vault" in source ? source.vault : source;
+	const files = vault
+		.getMarkdownFiles()
+		.filter((f) => !f.path.endsWith(CONFLICT_SUFFIX));
 	const out: ScannedFile[] = [];
 	for (const file of files) {
 		const text = await vault.cachedRead(file);

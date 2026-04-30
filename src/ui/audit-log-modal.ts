@@ -48,5 +48,5 @@ export function renderAuditMarkdown(entries: readonly AuditEntry[]): string {
 }
 
 function escapeMarkdown(s: string): string {
-	return s.replace(/([\\`*_{}\[\]()#+\-.!|])/g, "\\$1");
+	return s.replace(/([\\`*_{}[\]()#+\-.!|])/g, "\\$1");
 }

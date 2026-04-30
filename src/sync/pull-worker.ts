@@ -1,9 +1,10 @@
-import type { App, TFile } from "obsidian";
+import { normalizePath, type App, type TFile } from "obsidian";
 import type { VaultApiClient } from "../client/vault-api";
 import type { ManifestRecord } from "../settings";
 import type { PullFile } from "../types";
-import { stringifyFile, withHumaUuid } from "./frontmatter";
+import { replaceFileBody, stringifyFile, withHumaUuid } from "./frontmatter";
 import { sha256Hex } from "./hash";
+import type { SelfWriteTracker } from "./self-write-tracker";
 
 export const PULL_BATCH_SIZE = 50;
 
@@ -15,12 +16,24 @@ export interface PullProgress {
 
 export interface PullWorkerHandlers {
 	onProgress?(p: PullProgress): void;
+	// Called after each batch with the running manifest snapshot. Lets the
+	// engine persist progress incrementally so a mid-cycle crash doesn't lose
+	// files that were already written to the vault.
+	onManifestUpdate?: (manifest: ManifestRecord[]) => Promise<void>;
 }
 
 export interface PullResult {
 	updatedManifest: ManifestRecord[];
 	written: number;
 	errors: Array<{ id: string; error: string }>;
+	audit: PullAuditEntry[];
+}
+
+export interface PullAuditEntry {
+	id: string;
+	path: string;
+	version: number;
+	timestamp: string;
 }
 
 // Pulls a list of UUIDs from the server in batches of 50, writes each file
@@ -32,12 +45,14 @@ export async function runPullWorker(
 	app: App,
 	ids: readonly string[],
 	currentManifest: readonly ManifestRecord[],
+	tracker: SelfWriteTracker,
 	handlers: PullWorkerHandlers = {},
 ): Promise<PullResult> {
 	const manifestById = new Map<string, ManifestRecord>();
 	for (const r of currentManifest) manifestById.set(r.id, r);
 
 	const errors: PullResult["errors"] = [];
+	const audit: PullAuditEntry[] = [];
 	let written = 0;
 	const total = ids.length;
 
@@ -59,13 +74,23 @@ export async function runPullWorker(
 
 		for (const file of response.files) {
 			try {
-				const record = await writePulledFile(app, file);
+				const record = await writePulledFile(app, file, tracker);
 				manifestById.set(record.id, record);
 				written++;
+				audit.push({
+					id: record.id,
+					path: record.path,
+					version: record.version,
+					timestamp: record.lastSyncedAt,
+				});
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
 				errors.push({ id: file.id, error: message });
 			}
+		}
+
+		if (handlers.onManifestUpdate) {
+			await handlers.onManifestUpdate(Array.from(manifestById.values()));
 		}
 
 		handlers.onProgress?.({
@@ -79,32 +104,38 @@ export async function runPullWorker(
 		updatedManifest: Array.from(manifestById.values()),
 		written,
 		errors,
+		audit,
 	};
 }
 
 async function writePulledFile(
 	app: App,
 	file: PullFile,
+	tracker: SelfWriteTracker,
 ): Promise<ManifestRecord> {
+	// Server-provided paths must be normalized before any vault op — guards
+	// against accidental traversal segments and platform-mixed slashes.
+	const safePath = normalizePath(file.path);
 	const frontmatter = withHumaUuid(file.frontmatter ?? {}, file.id);
 	const text = stringifyFile(file.body, frontmatter);
-	const existing = app.vault.getAbstractFileByPath(file.path);
+	const existing = app.vault.getAbstractFileByPath(safePath);
+	const hash = await sha256Hex(file.body);
 
+	tracker.record(safePath, hash);
 	if (existing && isMarkdownTFile(existing)) {
-		await app.vault.modify(existing, text);
+		await replaceFileBody(app, existing, text);
 	} else if (existing) {
 		throw new Error(
-			`Vault path ${file.path} is not a markdown file; refusing to overwrite.`,
+			`Vault path ${safePath} is not a markdown file; refusing to overwrite.`,
 		);
 	} else {
-		await ensureParentFolder(app, file.path);
-		await app.vault.create(file.path, text);
+		await ensureParentFolder(app, safePath);
+		await app.vault.create(safePath, text);
 	}
 
-	const hash = await sha256Hex(file.body);
 	return {
 		id: file.id,
-		path: file.path,
+		path: safePath,
 		version: file.version,
 		hash,
 		lastSyncedAt: new Date().toISOString(),

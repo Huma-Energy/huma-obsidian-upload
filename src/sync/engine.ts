@@ -12,6 +12,7 @@ import {
 import { reconcile, type SyncAction } from "./reconcile";
 import { scanVault, type ScannedFile } from "./scan";
 import { listConflictFiles } from "./conflict";
+import type { SelfWriteTracker } from "./self-write-tracker";
 
 export interface SyncEngineCallbacks {
 	onState(state: EngineState): void;
@@ -36,6 +37,7 @@ export interface SyncRunResult {
 export interface SyncEngineDeps {
 	api: VaultApiClient;
 	app: App;
+	tracker: SelfWriteTracker;
 	getManifest(): readonly ManifestRecord[];
 	saveManifest(records: ManifestRecord[]): Promise<void>;
 	appendAudit(entries: AuditEntry[]): Promise<void>;
@@ -118,6 +120,10 @@ export class SyncEngine {
 					app,
 					pullIds,
 					manifestSnapshot,
+					this.deps.tracker,
+					{
+						onManifestUpdate: (m) => this.deps.saveManifest(m),
+					},
 				);
 				manifestSnapshot = pullResult.updatedManifest;
 			}
@@ -129,6 +135,10 @@ export class SyncEngine {
 					app,
 					pushInputs,
 					manifestSnapshot,
+					this.deps.tracker,
+					{
+						onManifestUpdate: (m) => this.deps.saveManifest(m),
+					},
 				);
 				manifestSnapshot = pushResult.updatedManifest;
 			}
@@ -145,7 +155,11 @@ export class SyncEngine {
 				);
 			}
 
-			const audit: AuditEntry[] = collectAudit(pushResult?.outcomes ?? [], stats);
+			const audit: AuditEntry[] = collectAudit(
+				pushResult?.outcomes ?? [],
+				pullResult?.audit ?? [],
+				stats,
+			);
 
 			await this.deps.saveManifest(manifestSnapshot);
 			if (audit.length > 0) await this.deps.appendAudit(audit);
@@ -207,8 +221,15 @@ async function fetchEntireManifest(
 
 function collectAudit(
 	outcomes: readonly PushOutcome[],
+	pullAudit: readonly { id: string; path: string; timestamp: string }[],
 	stats: { add: number; pull: number; push: number },
 ): AuditEntry[] {
 	void stats;
-	return outcomes.map((o) => o.audit);
+	const pullEntries: AuditEntry[] = pullAudit.map((p) => ({
+		timestamp: p.timestamp,
+		event: "pull_apply",
+		path: p.path,
+		id: p.id,
+	}));
+	return [...pullEntries, ...outcomes.map((o) => o.audit)];
 }

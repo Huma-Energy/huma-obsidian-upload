@@ -17,8 +17,6 @@ export class HumaSettingsTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
-		containerEl.createEl("h2", { text: "Huma Vault Sync" });
-
 		new Setting(containerEl)
 			.setName("Server base URL")
 			.setDesc(
@@ -26,6 +24,7 @@ export class HumaSettingsTab extends PluginSettingTab {
 			)
 			.addText((text) =>
 				text
+					// eslint-disable-next-line obsidianmd/ui/sentence-case -- URL placeholder, not UI prose
 					.setPlaceholder("https://huma.energy")
 					.setValue(this.plugin.data.settings.serverBaseUrl)
 					.onChange(async (value) => {

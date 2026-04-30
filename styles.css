@@ -1,1 +1,6 @@
-/* Huma Vault Sync — plugin styles. Empty at v1; reserved for future status-bar/conflict-view styling. */
+/* Huma Vault Sync — plugin styles. */
+
+.huma-status-bar {
+	cursor: pointer;
+}
+

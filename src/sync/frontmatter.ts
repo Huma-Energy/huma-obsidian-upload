@@ -1,4 +1,5 @@
 import matter from "gray-matter";
+import type { App, TFile } from "obsidian";
 
 export const HUMA_UUID_KEY = "huma_uuid";
 
@@ -54,4 +55,14 @@ export function withHumaUuid(
 	}
 	out[HUMA_UUID_KEY] = uuid;
 	return out;
+}
+
+// Atomic body replace via Vault.process. Required by Obsidian's plugin
+// guidelines for any background-write that another plugin might race.
+export async function replaceFileBody(
+	app: App,
+	file: TFile,
+	text: string,
+): Promise<void> {
+	await app.vault.process(file, () => text);
 }

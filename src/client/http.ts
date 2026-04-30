@@ -1,3 +1,4 @@
+import { requestUrl } from "obsidian";
 import type { ApiError } from "../types";
 
 export class HttpError extends Error {
@@ -29,13 +30,15 @@ export interface JsonRequestOptions {
 	path: string;
 	body?: unknown;
 	bearer?: string;
-	signal?: AbortSignal;
 }
 
 export interface HttpClient {
 	request<T>(opts: JsonRequestOptions): Promise<T>;
 }
 
+// Uses Obsidian's `requestUrl` (Electron net on desktop, native on mobile)
+// instead of `fetch`. Per the plugin guidelines, this avoids CORS preflight
+// and is the documented way to make network requests from a plugin.
 export class FetchHttpClient implements HttpClient {
 	private readonly baseUrl: string;
 
@@ -46,21 +49,21 @@ export class FetchHttpClient implements HttpClient {
 	async request<T>(opts: JsonRequestOptions): Promise<T> {
 		const url = `${this.baseUrl}${opts.path}`;
 		const headers: Record<string, string> = {
-			"Content-Type": "application/json",
 			Accept: "application/json",
 		};
-		if (opts.bearer) {
-			headers.Authorization = `Bearer ${opts.bearer}`;
-		}
-		const res = await fetch(url, {
+		if (opts.body !== undefined) headers["Content-Type"] = "application/json";
+		if (opts.bearer) headers.Authorization = `Bearer ${opts.bearer}`;
+
+		const res = await requestUrl({
+			url,
 			method: opts.method,
 			headers,
 			body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
-			signal: opts.signal,
+			throw: false,
 		});
-		const text = await res.text();
+		const text = res.text;
 		const parsed: unknown = text.length === 0 ? null : safeParse(text);
-		if (!res.ok) {
+		if (res.status < 200 || res.status >= 300) {
 			throw new HttpError(res.status, parsed, isApiError(parsed) ? parsed : null);
 		}
 		return parsed as T;
