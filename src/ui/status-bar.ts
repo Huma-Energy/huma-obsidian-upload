@@ -12,7 +12,12 @@ export type StatusBarState =
 	| { kind: "idle"; lastSyncedAt: string | null }
 	| { kind: "syncing"; pendingActions: number }
 	| { kind: "error"; message: string }
-	| { kind: "conflict"; conflictCount: number; staleCount: number };
+	| {
+			kind: "conflict";
+			conflictCount: number;
+			staleCount: number;
+			duplicateCount: number;
+	  };
 
 export interface StatusBarHandle {
 	render(state: StatusBarState): void;
@@ -89,7 +94,8 @@ export function shortLabelFor(state: StatusBarState): string {
 		case "error":
 			return "";
 		case "conflict": {
-			const total = state.conflictCount + state.staleCount;
+			const total =
+				state.conflictCount + state.staleCount + state.duplicateCount;
 			return total > 0 ? String(total) : "";
 		}
 		case "blocked":
@@ -111,8 +117,22 @@ export function formatStatusAria(state: StatusBarState): string {
 			return `Huma Vault Sync syncing. ${state.pendingActions} actions pending.`;
 		case "error":
 			return `Huma Vault Sync error: ${state.message}. Click to view log.`;
-		case "conflict":
-			return `Huma Vault Sync has ${state.conflictCount} unresolved conflicts and ${state.staleCount} stale local deletions.`;
+		case "conflict": {
+			const parts: string[] = [];
+			if (state.conflictCount > 0) {
+				parts.push(`${state.conflictCount} unresolved conflicts`);
+			}
+			if (state.staleCount > 0) {
+				parts.push(`${state.staleCount} stale local deletions`);
+			}
+			if (state.duplicateCount > 0) {
+				parts.push(
+					`${state.duplicateCount} duplicate huma_uuid sets (sync paused for those files)`,
+				);
+			}
+			const summary = parts.length > 0 ? parts.join(", ") : "no issues";
+			return `Huma Vault Sync has ${summary}. Click to view log.`;
+		}
 	}
 }
 

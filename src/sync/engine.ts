@@ -2,6 +2,12 @@ import type { App } from "obsidian";
 import type { VaultApiClient } from "../client/vault-api";
 import type { ManifestRecord } from "../settings";
 import type { ManifestEntry, AuditEntry } from "../types";
+import {
+	advancePolicy,
+	initialPolicyState,
+	shouldFullFetch,
+	type ManifestFetchPolicyState,
+} from "./manifest-fetch-policy";
 import { runPullWorker, type PullResult } from "./pull-worker";
 import {
 	runPushWorker,
@@ -23,7 +29,14 @@ export type EngineState =
 	| { kind: "idle"; lastSyncedAt: string | null }
 	| { kind: "syncing"; pending: number }
 	| { kind: "error"; message: string }
-	| { kind: "conflict"; conflicts: number; stale: number };
+	| {
+			kind: "conflict";
+			conflicts: number;
+			stale: number;
+			// Vault files with shared huma_uuid frontmatter; sync is paused for
+			// these UUIDs until the user removes one of the duplicates.
+			duplicates: number;
+	  };
 
 export interface SyncRunResult {
 	pull: PullResult | null;
@@ -52,6 +65,11 @@ export class SyncEngine {
 	private readonly deps: SyncEngineDeps;
 	private inflight: Promise<SyncRunResult> | null = null;
 	private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+	// In-memory only. Plugin reload resets this to `firstCycle: true`, which
+	// is exactly the recovery path: a stale `lastSince` persisted across
+	// sign-out cannot mask backfilled rows on the next session because the
+	// first cycle always full-fetches.
+	private fetchPolicyState: ManifestFetchPolicyState = initialPolicyState();
 
 	constructor(deps: SyncEngineDeps) {
 		this.deps = deps;
@@ -84,10 +102,16 @@ export class SyncEngine {
 
 		try {
 			const excludedFolders = this.deps.getExcludedFolders();
-			const serverManifest = await fetchEntireManifest(api, this.deps.getLastSince());
+			// Cold-start full fetch + periodic re-baseline: standard delta-sync
+			// recovery practice. Stale `lastSince` (preserved across sign-out)
+			// cannot hide rows the server backfilled with timestamps older
+			// than the persisted cursor — the first cycle re-fetches them all.
+			const doFullFetch = shouldFullFetch(this.fetchPolicyState);
+			const sinceForFetch = doFullFetch ? null : this.deps.getLastSince();
+			const serverManifest = await fetchEntireManifest(api, sinceForFetch);
 			const scanned = await scanVault(app, excludedFolders);
 			const localManifest = this.deps.getManifest();
-			const { actions, stats } = reconcile({
+			const { actions, stats, duplicateUuids } = reconcile({
 				serverManifest: serverManifest.entries,
 				localManifest,
 				scanned,
@@ -174,20 +198,53 @@ export class SyncEngine {
 				manifestSnapshot = pushResult.updatedManifest;
 			}
 
-			// Drop manifest entries the server has tombstoned.
+			// Drop manifest entries the server has tombstoned. Each drop emits
+			// a `server_deleted` audit so the user can trace why a row vanished
+			// (and find the on-disk file the plugin intentionally left behind).
+			const tombstoneAuditEntries: AuditEntry[] = [];
 			const tombstones = new Set(
 				serverManifest.entries
 					.filter((e) => e.deleted_at !== null)
 					.map((e) => e.id),
 			);
 			if (tombstones.size > 0) {
+				const droppedRows = manifestSnapshot.filter((r) => tombstones.has(r.id));
+				for (const row of droppedRows) {
+					tombstoneAuditEntries.push({
+						timestamp: new Date().toISOString(),
+						event: "server_deleted",
+						path: row.path,
+						id: row.id,
+					});
+				}
 				manifestSnapshot = manifestSnapshot.filter(
 					(r) => !tombstones.has(r.id),
 				);
 			}
 
+			const pullDropAuditEntries: AuditEntry[] = (pullResult?.dropped ?? []).map(
+				(d) => ({
+					timestamp: d.timestamp,
+					event: "pull_drop",
+					path: d.path ?? "(unknown)",
+					id: d.id,
+					detail: "server reported not_found; manifest row dropped",
+				}),
+			);
+
+			const duplicateAuditEntries: AuditEntry[] = duplicateUuids.map((d) => ({
+				timestamp: new Date().toISOString(),
+				event: "duplicate_uuid",
+				path: d.paths.join(", "),
+				id: d.uuid,
+				detail: `${d.paths.length} files share huma_uuid ${d.uuid}; sync skipped until resolved`,
+			}));
+
 			const audit: AuditEntry[] = [
 				...renameAuditEntries,
+				...tombstoneAuditEntries,
+				...pullDropAuditEntries,
+				...duplicateAuditEntries,
 				...collectAudit(
 					pushResult?.outcomes ?? [],
 					pullResult?.audit ?? [],
@@ -198,15 +255,27 @@ export class SyncEngine {
 			await this.deps.saveManifest(manifestSnapshot);
 			if (audit.length > 0) await this.deps.appendAudit(audit);
 			await this.deps.saveLastSince(serverManifest.serverTime);
+			// Only advance the fetch policy on a fully successful cycle —
+			// errors thrown above skip this and the next cycle re-tries the
+			// same fetch mode, preserving cold-start guarantee on retry.
+			this.fetchPolicyState = advancePolicy(
+				this.fetchPolicyState,
+				doFullFetch,
+			);
 
 			const conflicts = listConflictFiles(app).length;
 			const finishedAt = new Date().toISOString();
 
-			if (conflicts > 0 || stats.staleLocalDelete > 0) {
+			if (
+				conflicts > 0 ||
+				stats.staleLocalDelete > 0 ||
+				stats.duplicateUuid > 0
+			) {
 				callbacks?.onState({
 					kind: "conflict",
 					conflicts,
 					stale: stats.staleLocalDelete,
+					duplicates: stats.duplicateUuid,
 				});
 			} else {
 				callbacks?.onState({ kind: "idle", lastSyncedAt: finishedAt });

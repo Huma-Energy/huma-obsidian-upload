@@ -50,7 +50,7 @@ Within row #6 the action depends on three boolean conditions:
 | ✓ | ✗ | – | ✗ | `push` with `previousPath` | plugin-side rename, no body change |
 | ✓ | ✗ | – | ✓ | `push` with `previousPath` | plugin-side rename + local edit |
 | ✗ | ✓ | – | – | `rename-local`, then pull/push as needed | server-side rename detected (commit `0685a8b`) |
-| ✗ | ✗ | – | – | `rename-local` + push at `server.path` | rare three-way mismatch — best-effort |
+| ✗ | ✗ | – | – | `push` at `scan.path` with `previousPath = local.path` | rare three-way mismatch. `serverRenamed` requires `scanned.path === local.path`, so this case bypasses rename-local entirely; client-side rename wins, server's competing rename is lost. Lossy by design — see § "Out of scope" |
 
 `rename-local` is ordered **before** pulls and pushes (`reconcile.ts:234-242`), so any same-cycle pull or push uses `server.path` as the logical path and lands at the post-rename file. The engine moves the local file via `app.fileManager.renameFile` (`rename-local.ts:18`), which also updates internal links across the vault.
 
@@ -90,7 +90,7 @@ Within row #6 the action depends on three boolean conditions:
 
 - Drops the local manifest row at end-of-cycle.
 - Vault file is left alone — the user chooses whether to delete locally.
-- **No audit event currently fires.** Gap.
+- Audit: `server_deleted` event per dropped row, with the row's last-known path.
 
 ### `stale-local-delete`
 
@@ -131,7 +131,7 @@ Triggered by server's `merge_dirty` response.
 |---|---|---|
 | Request body > 5 MB (Netlify body cap) | server returns size-cap error first; retries return generic 500. Plugin defers, retries on every cycle | Server-side limit; client-side pre-flight check queued |
 | Token-shaped string in vault file matching a stored token | startup invariant blocks plugin load with 0-timeout Notice naming the file; `token_scan_warning` audit entry written | As designed |
-| Token-shaped string heuristic match (not stored token) | non-blocking warning Notice at startup — **only if currently signed in** | Known gap: pre-sign-in scan is silent |
+| Token-shaped string heuristic match (not stored token) | non-blocking warning Notice at startup, including pre-sign-in (heuristic loop runs whether or not stored tokens exist) | As designed |
 | Plugin self-write triggers `vault.on('modify')` | self-write tracker (path × body-hash, 30 s TTL, periodic prune) suppresses the matching event | As designed |
 | `*.conflict.md` file gets pushed as new doc | scanner filter excludes by suffix | As designed |
 | Empty body + frontmatter-only file (backfilled web doc) | hash uses parsed-back body, not raw `""`; no false locally-edited flag on the next cycle | Fixed in `0685a8b` |
@@ -140,10 +140,12 @@ Triggered by server's `merge_dirty` response.
 | Mid-cycle plugin crash | manifest persisted incrementally (push every 25, pull per batch). Next start picks up from last persisted state | As designed |
 | Server returns path with backslashes / leading slashes / non-NFC unicode | `normalizePath` cleans; the cleaned path is used everywhere thereafter | As designed |
 | File with `huma_uuid` set but UUID unknown to server (stale frontmatter) | pass-2 emits push with id=null; server allocates new UUID and overwrites the frontmatter | As designed |
-| Two local files share the same `huma_uuid` (corrupted import) | `scannedByUuid` stores the second one; the first is silently skipped | Locked in `tests/sync/reconcile.test.ts` "dedupes scanned files that share a huma_uuid" |
+| Locally-synced file with `huma_uuid` known to local manifest but absent from a delta server manifest (`?since=lastSince` window misses unchanged files) | reconcile synthesises a server manifest entry for every locally-tracked UUID delta omitted (using the local manifest's last-known state), then routes through Pass 1 normally. In-sync files no-op; locally-edited or renamed files emit push; locally-deleted files emit stale-local-delete. Pass 2 only handles true first-push (id=null) cases | As designed (regression tests in `tests/sync/reconcile.test.ts`: "delta hides server entry, file edited locally → pushes via synthetic server entry", "delta hides server entry, file deleted locally → emits stale-local-delete") |
+| Server has rows whose `updated_at` is older than the persisted `lastSince` (e.g. backfilled web docs the user has never pulled, post-sign-out where manifest is preserved) | Engine cold-starts every plugin load with a full fetch and re-baselines every `FULL_FETCH_EVERY` cycles. Standard delta-sync recovery practice (RFC 6578, MS Graph deltas, CloudKit, Drive Changes API) | As designed (policy unit-tested in `tests/sync/manifest-fetch-policy.test.ts`) |
+| Two local files share the same `huma_uuid` (corrupted import) | reconcile refuses to push, pull, or rename for the duplicate UUID. Engine emits `duplicate_uuid` audit and the status bar shows a `conflict` state until the user removes the duplicate frontmatter from one of the files | As designed |
 | Server returns 401 mid-sync | TokenManager refreshes once; on refresh failure the cycle errors and the status bar shows `error` with `classifyErrorForUser` | As designed |
 | Network unreachable | TypeError caught, classified to "server unreachable" Notice | As designed |
-| Pull returns `id` server doesn't have (`error: not_found`) | not handled — pull-worker doesn't drop the manifest row per the API contract | **Gap** |
+| Pull returns `id` server doesn't have (`error: not_found`) | pull-worker drops the named id from the local manifest, retries the rest of the batch (capped at batch length to bound a misbehaving server), and emits a `pull_drop` audit per drop | As designed |
 | `vault.create` race when two cycles try to create same path | second `create` throws "File exists"; outcome marked deferred | Acceptable |
 
 ## Out of scope / deferred
@@ -164,12 +166,12 @@ For each row in the master matrix and the sub-matrix, the test that covers it (o
 | Scenario | Test |
 |---|---|
 | #1 add (new local, no UUID) | `tests/sync/reconcile.test.ts` "emits an add for a scanned file with no huma_uuid" |
-| #2 push id=null (UUID frontmatter, server-unknown) | manual |
-| #3 pull (first-time) | manual |
-| #4 pull (recover from wiped data.json) | manual |
+| #2 push id=null (UUID frontmatter, server-unknown) | `tests/sync/reconcile.test.ts` "master row #2: pushes with id=null when scan has a UUID neither side knows" |
+| #3 pull (first-time) | `tests/sync/reconcile.test.ts` "master row #3: pulls first-time when server has a row neither local manifest nor scan has" |
+| #4 pull (recover from wiped data.json) | `tests/sync/reconcile.test.ts` "master row #4: pulls to recover when data.json was wiped" |
 | #5 stale-local-delete | `tests/sync/reconcile.test.ts` "emits a stale-local-delete when the file vanished locally" |
 | #6 various | see sub-matrix below |
-| #7 no-op | implicit |
+| #7 no-op | `tests/sync/reconcile.test.ts` "master row #7 (no-op): emits no actions when server, local, and scan all agree" |
 | #8 server-deleted | `tests/sync/reconcile.test.ts` "emits server-deleted for tombstoned server entries" |
 | #6 clean pull | `tests/sync/reconcile.test.ts` "emits a pull when the server has a newer version and locally unchanged" |
 | #6 clean push | `tests/sync/reconcile.test.ts` "emits a push when the local file diverges from the manifest" |
@@ -178,12 +180,19 @@ For each row in the master matrix and the sub-matrix, the test that covers it (o
 | #6 server-side rename only | `tests/sync/reconcile.test.ts` "emits rename-local when server moved a file the user did not" |
 | #6 server-side rename + version bump | `tests/sync/reconcile.test.ts` "rename-local plus pull when server renamed and bumped version" |
 | #6 server-rename, no double-push | `tests/sync/reconcile.test.ts` "does not emit plugin-side push-rename when scan path matches local" |
+| #6 plugin-side rename + local edit | `tests/sync/reconcile.test.ts` "sub-matrix ✓ ✗ – ✓: emits a single push with previousPath for plugin-side rename + local edit" |
+| #6 three-way path mismatch (lossy) | `tests/sync/reconcile.test.ts` "sub-matrix ✗ ✗ – –: concurrent rename-rename to different paths" |
+| Cold-start / re-baseline manifest fetch | `tests/sync/manifest-fetch-policy.test.ts` |
+| Pass 2 skip on locally-known UUID (delta-mode protection) | `tests/sync/reconcile.test.ts` "does not re-push a locally-known file absent from a delta server manifest" |
 | Empty-body hash drift | `tests/sync/frontmatter.test.ts` "hash of parsed-back body is stable…" |
 | Excluded folder filter | `tests/sync/reconcile.test.ts` "emits no actions for server entries inside an excluded folder" |
 | Conflict file frontmatter scan filter | `tests/sync/scan.test.ts` "excludes *.conflict.md files from the scan" |
 | Path normalization defence | `tests/sync/conflict.test.ts` "normalizes path traversal attempts" |
 | Self-write tracker | `tests/sync/self-write-tracker.test.ts` |
 | Error classification | `tests/main-error-classifier.test.ts` |
+| Pull `not_found` drop | `tests/sync/pull-worker.test.ts` |
+| Duplicate `huma_uuid` refusal | `tests/sync/reconcile.test.ts` "refuses to act when two scanned files share a huma_uuid" |
+| Pre-sign-in heuristic token scan | `tests/security/vault-token-scan.test.ts` "surfaces heuristic matches when no stored tokens are configured (pre-sign-in)" |
 
 ## Updating this doc
 

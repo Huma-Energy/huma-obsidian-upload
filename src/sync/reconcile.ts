@@ -62,6 +62,11 @@ export interface ReconcileInput {
 	excludedFolders?: readonly string[];
 }
 
+export interface DuplicateUuid {
+	uuid: string;
+	paths: string[];
+}
+
 export interface ReconcileOutput {
 	actions: SyncAction[];
 	// Diagnostic counters surfaced via the status bar / audit log.
@@ -73,7 +78,14 @@ export interface ReconcileOutput {
 		conflict: number;
 		staleLocalDelete: number;
 		serverDeleted: number;
+		duplicateUuid: number;
 	};
+	// Vault files that share a huma_uuid. Reconcile refuses to push, pull, or
+	// rename for these UUIDs; pushing the "winner" would tell the server to
+	// rename the original (still on disk) and the next pull could clobber
+	// content the user still has locally. Engine surfaces these via audit
+	// + conflict status until the user removes the duplicate frontmatter.
+	duplicateUuids: DuplicateUuid[];
 }
 
 // Reconciles three views of the vault into a deterministic ordered action list.
@@ -109,12 +121,36 @@ export function reconcile(input: ReconcileInput): ReconcileOutput {
 	const localById = new Map<string, ManifestRecord>();
 	for (const e of localManifest) localById.set(e.id, e);
 
-	const scannedByUuid = new Map<string, ScannedFile>();
+	// Group scanned files by UUID so we can detect duplicates: the same
+	// huma_uuid appearing on more than one file is a corruption case (e.g.
+	// user copy-pasted a synced note). Acting on it would push one file as
+	// a rename of the other, with the loser still on disk — a real
+	// data-loss path. Skip both files entirely until the user resolves it.
+	const scannedByUuidAll = new Map<string, ScannedFile[]>();
 	const scannedNoUuid: ScannedFile[] = [];
 	for (const f of scannedFiles) {
-		if (f.uuid) scannedByUuid.set(f.uuid, f);
-		else scannedNoUuid.push(f);
+		if (f.uuid) {
+			const existing = scannedByUuidAll.get(f.uuid);
+			if (existing) existing.push(f);
+			else scannedByUuidAll.set(f.uuid, [f]);
+		} else {
+			scannedNoUuid.push(f);
+		}
 	}
+	const scannedByUuid = new Map<string, ScannedFile>();
+	const duplicateUuids: DuplicateUuid[] = [];
+	for (const [uuid, files] of scannedByUuidAll) {
+		if (files.length === 1) {
+			scannedByUuid.set(uuid, files[0]!);
+		} else {
+			duplicateUuids.push({
+				uuid,
+				paths: files.map((f) => f.path),
+			});
+		}
+	}
+
+	const duplicateUuidSet = new Set(duplicateUuids.map((d) => d.uuid));
 
 	const pulls: PullAction[] = [];
 	const pushes: PushAction[] = [];
@@ -124,10 +160,44 @@ export function reconcile(input: ReconcileInput): ReconcileOutput {
 	const serverDeletes: ServerDeletedAction[] = [];
 	let conflictCount = 0;
 
-	// Pass 1: every server-known file.
-	for (const serverEntry of serverManifest) {
+	// Effective server view: the delta-mode manifest plus a synthetic entry
+	// for every locally-tracked UUID the delta omitted. The omission means
+	// the server hasn't changed that row since `lastSince`, so its
+	// last-known state is exactly what local manifest stores. Without this,
+	// a file the user has edited or renamed since the last sync would never
+	// reconcile when delta mode hides its server row — Pass 1 would skip it
+	// (not in delta) and Pass 2 would skip it (locally-known UUID per the
+	// dedupe protection). The synthetic entry routes those cases through
+	// Pass 1's existing rename / edit / stale-delete branches.
+	const serverByIdEffective = new Map<string, ManifestEntry>(serverById);
+	for (const local of localManifest) {
+		if (serverByIdEffective.has(local.id)) continue;
+		serverByIdEffective.set(local.id, {
+			id: local.id,
+			path: local.path,
+			version: local.version,
+			hash: local.hash,
+			// If the server had tombstoned this row, the delta would have
+			// returned it — absence implies still alive at the cached state.
+			deleted_at: null,
+		});
+	}
+
+	// Pass 1: every server-known file (delta + synthesised).
+	for (const serverEntry of serverByIdEffective.values()) {
 		const local = localById.get(serverEntry.id);
 		const scanned = scannedByUuid.get(serverEntry.id);
+
+		// Duplicate huma_uuid: refuse to act on a non-tombstoned server entry
+		// whose id appears on more than one local file. Tombstones still
+		// process normally — dropping the manifest row is safe regardless of
+		// how many vault files claim the id.
+		if (
+			serverEntry.deleted_at === null &&
+			duplicateUuidSet.has(serverEntry.id)
+		) {
+			continue;
+		}
 
 		if (serverEntry.deleted_at !== null) {
 			// Server-side tombstone. Plugin drops the local manifest row; the
@@ -244,15 +314,21 @@ export function reconcile(input: ReconcileInput): ReconcileOutput {
 		// else: in-sync (or rename-local handles it alone), no further action.
 	}
 
-	// Pass 2: scanned files with a huma_uuid the server doesn't know about.
-	// Treat as adds — server will reject if the UUID conflicts.
+	// Pass 2: scanned files with a huma_uuid neither the server nor the
+	// local manifest knows about. Two cases: (a) bulk import wrote the UUID
+	// before the server registered it, (b) UUID frontmatter is stale from
+	// a previous deleted-then-recreated file. Either way the server is the
+	// authority — push and let it allocate or recognise.
+	//
+	// CRITICAL: we must skip UUIDs that ARE in the local manifest. The
+	// server manifest is fetched in delta mode (`?since=lastSince`) and
+	// returns only files modified inside that window; locally-known files
+	// the user hasn't touched fall outside the window and are therefore
+	// absent from `serverById`. Without the localById guard, every cycle
+	// would re-push every previously-synced file as a "first push".
 	for (const [uuid, scanned] of scannedByUuid) {
 		if (serverById.has(uuid)) continue;
-		// The scanner saw a UUID frontmatter, but neither the server nor
-		// local manifest knows it. Two cases: (a) bulk import wrote the UUID
-		// before the server registered it, (b) UUID frontmatter is stale
-		// from a previous deleted-then-recreated file. Either way the server
-		// is the authority — push and let it allocate or recognise.
+		if (localById.has(uuid)) continue;
 		pushes.push({
 			kind: "push",
 			id: actionId("push", uuid),
@@ -292,7 +368,9 @@ export function reconcile(input: ReconcileInput): ReconcileOutput {
 			conflict: conflictCount,
 			staleLocalDelete: staleDeletes.length,
 			serverDeleted: serverDeletes.length,
+			duplicateUuid: duplicateUuids.length,
 		},
+		duplicateUuids,
 	};
 }
 
