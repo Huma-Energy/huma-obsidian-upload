@@ -28,18 +28,18 @@ export async function scanVaultForTokens(
 	const blocking: VaultTokenLeakHit[] = [];
 	const suspicious: VaultTokenLeakHit[] = [];
 
-	if (knownTokens.length === 0) {
-		// No stored tokens to compare against — we can still surface heuristic
-		// matches but there's nothing to definitively block on.
-		return { blocking, suspicious };
-	}
-
+	// The heuristic scan runs whether or not we have stored tokens to compare
+	// against — pre-sign-in vaults can already contain token-shaped strings
+	// the user should know about. The exact-match block path is conditional
+	// on knownTokens because there's nothing to compare a candidate to
+	// without them.
+	const checkExact = knownTokens.length > 0;
 	const files: TFile[] = app.vault.getMarkdownFiles();
 	for (const file of files) {
 		const text = await app.vault.cachedRead(file);
 		const candidates = findTokenShapedStrings(text).map((m) => m.value);
 		if (candidates.length === 0) continue;
-		if (anyMatchesKnownToken(candidates, knownTokens)) {
+		if (checkExact && anyMatchesKnownToken(candidates, knownTokens)) {
 			blocking.push({ path: file.path, matchedExactStoredToken: true });
 			continue;
 		}

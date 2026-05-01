@@ -168,6 +168,7 @@ export default class HumaVaultSyncPlugin extends Plugin {
 					kind: "conflict",
 					conflictCount: state.conflicts,
 					staleCount: state.stale,
+					duplicateCount: state.duplicates,
 				});
 				return;
 		}
