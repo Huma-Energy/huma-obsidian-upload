@@ -152,6 +152,7 @@ export function renderAuditPlainText(entries: readonly AuditEntry[]): string {
 function severityFor(event: AuditEvent): Severity {
 	switch (event) {
 		case "push_reject":
+		case "auth_error":
 			return "error";
 		case "merge_dirty":
 		case "token_scan_warning":

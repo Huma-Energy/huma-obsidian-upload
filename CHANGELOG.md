@@ -4,6 +4,10 @@ All notable changes to **Huma Vault Sync** will be documented here. The format f
 
 ## [Unreleased]
 
+### Tests
+
+- Reconcile dedupe regression test: two scanned files sharing a `huma_uuid` collapse to a single action driven by the second occurrence; the first is silently skipped (current behavior). Locks the matrix row "Two local files share the same `huma_uuid`" so a future refactor of `scannedByUuid` can't regress it.
+
 ### Added
 
 - **Excluded folders** setting. Vault-relative folder paths (one per line, prefix match) whose contents are skipped by sync. Files already on the server are not deleted when a folder is added to the list — they remain frozen at their last-synced version until archived manually on the dashboard. Reconcile drops excluded paths from the server manifest, the local manifest, and the vault scan, so excluded files cannot push, pull, or trigger stale-delete actions.

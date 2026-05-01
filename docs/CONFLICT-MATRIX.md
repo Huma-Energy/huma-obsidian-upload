@@ -140,7 +140,7 @@ Triggered by server's `merge_dirty` response.
 | Mid-cycle plugin crash | manifest persisted incrementally (push every 25, pull per batch). Next start picks up from last persisted state | As designed |
 | Server returns path with backslashes / leading slashes / non-NFC unicode | `normalizePath` cleans; the cleaned path is used everywhere thereafter | As designed |
 | File with `huma_uuid` set but UUID unknown to server (stale frontmatter) | pass-2 emits push with id=null; server allocates new UUID and overwrites the frontmatter | As designed |
-| Two local files share the same `huma_uuid` (corrupted import) | `scannedByUuid` stores the second one; the first is silently skipped | Untested edge case |
+| Two local files share the same `huma_uuid` (corrupted import) | `scannedByUuid` stores the second one; the first is silently skipped | Locked in `tests/sync/reconcile.test.ts` "dedupes scanned files that share a huma_uuid" |
 | Server returns 401 mid-sync | TokenManager refreshes once; on refresh failure the cycle errors and the status bar shows `error` with `classifyErrorForUser` | As designed |
 | Network unreachable | TypeError caught, classified to "server unreachable" Notice | As designed |
 | Pull returns `id` server doesn't have (`error: not_found`) | not handled — pull-worker doesn't drop the manifest row per the API contract | **Gap** |
