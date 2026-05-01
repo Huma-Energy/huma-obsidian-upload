@@ -68,6 +68,10 @@ Build output is `main.js` at the repo root, alongside `manifest.json` (Obsidian'
 
 Vulnerability disclosure process and the plugin's security model are documented in [SECURITY.md](./SECURITY.md). Do not file public issues for suspected security findings.
 
+## Conflict matrix
+
+Every local-vs-server divergence the plugin can encounter, what action it emits, and which worker executes it, is enumerated in [docs/CONFLICT-MATRIX.md](./docs/CONFLICT-MATRIX.md). Read this before changing `reconcile.ts`.
+
 ## Changelog
 
 Release notes live in [CHANGELOG.md](./CHANGELOG.md).
