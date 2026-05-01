@@ -105,7 +105,8 @@ export type AuditEvent =
 	| "merge_dirty"
 	| "path_change"
 	| "pull_apply"
-	| "token_scan_warning";
+	| "token_scan_warning"
+	| "auth_error";
 
 export interface AuditEntry {
 	timestamp: string;

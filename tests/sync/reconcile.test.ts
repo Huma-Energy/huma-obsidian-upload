@@ -245,6 +245,32 @@ describe("reconcile", () => {
 		expect((pullAction as { path: string }).path).toBe("new/path.md");
 	});
 
+	it("dedupes scanned files that share a huma_uuid — last occurrence wins", () => {
+		// Corrupted-import case: two vault files carry the same huma_uuid (e.g.
+		// user copy-pasted a synced note). scannedByUuid stores the second one
+		// over the first; the first is silently skipped. Locking this in so a
+		// future refactor of the dedupe map can't regress behavior without
+		// the test surfacing it.
+		const out = reconcile({
+			serverManifest: [serverEntry({ id: "dup", path: "a.md", hash: "h-local" })],
+			localManifest: [localRecord({ id: "dup", path: "a.md", hash: "h-local" })],
+			scanned: [
+				// First occurrence: in-sync at "a.md" — would be a no-op on its own.
+				scanned({ uuid: "dup", path: "a.md", hash: "h-local" }),
+				// Second occurrence: at "b.md" — would produce a push-rename on its own.
+				scanned({ uuid: "dup", path: "b.md", hash: "h-local" }),
+			],
+		});
+		expect(out.actions).toHaveLength(1);
+		expect(out.actions[0]).toEqual({
+			kind: "push",
+			id: "push:dup",
+			serverId: "dup",
+			path: "b.md",
+			previousPath: "a.md",
+		});
+	});
+
 	it("does not emit plugin-side push-rename when scan path matches local", () => {
 		// Server-renamed scenario; ensure we don't ALSO produce a push that
 		// would try to rename the server back to the old path.

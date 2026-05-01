@@ -20,6 +20,7 @@ import { pushAuditMany } from "./audit/ring";
 import { parseFile } from "./sync/frontmatter";
 import { sha256Hex } from "./sync/hash";
 import { SelfWriteTracker } from "./sync/self-write-tracker";
+import { isUnrecoverableAuthError } from "./sync/token-manager";
 import type { AuditEntry } from "./types";
 
 const PLUGIN_USER_AGENT = "Huma Obsidian Plugin v0.1.0";
@@ -314,6 +315,28 @@ export default class HumaVaultSyncPlugin extends Plugin {
 			await this.engine.runSync();
 		} catch (err) {
 			new Notice(classifyErrorForUser(err), 6000);
+			// Auth-class failures: TokenManager has already cleared stored
+			// tokens (see token-manager.ts:refresh). Persist that state, log
+			// to the audit ring, and stop the polling loop so the plugin
+			// doesn't keep retrying with the (now-cleared) credentials.
+			if (isUnrecoverableAuthError(err)) {
+				const code =
+					err instanceof HttpError
+						? err.apiError?.error ?? `HTTP ${err.status}`
+						: "unknown";
+				pushAuditMany(this.data.auditRing, [
+					{
+						timestamp: new Date().toISOString(),
+						event: "auth_error",
+						path: "(auth)",
+						id: null,
+						detail: code,
+					},
+				]);
+				await this.saveAll();
+				this.stopPolling();
+				this.renderStatusBar({ kind: "signed-out" });
+			}
 		}
 	}
 
@@ -495,8 +518,8 @@ export default class HumaVaultSyncPlugin extends Plugin {
 // "Huma sync failed" so we never silently swallow a real failure.
 export function classifyErrorForUser(err: unknown): string {
 	if (err instanceof HttpError) {
-		if (err.status === 401 || err.apiError?.error === "invalid_token") {
-			return "Huma: signed out — please sign in again.";
+		if (isUnrecoverableAuthError(err) || err.status === 401) {
+			return "Huma: refresh token rejected — please sign in again.";
 		}
 		if (err.status >= 500) {
 			return "Huma: server error, will retry.";
