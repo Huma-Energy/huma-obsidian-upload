@@ -1,237 +1,277 @@
 import type { ManifestEntry } from "../types";
 import type { ManifestRecord } from "../settings";
 import type { ScannedFile } from "./scan";
+import { isExcludedPath } from "./exclusion";
 
 export type SyncAction =
 	| AddAction
 	| PullAction
 	| PushAction
+	| RenameLocalAction
 	| StaleLocalDeleteAction
 	| ServerDeletedAction;
 
-export interface AddAction {
-	kind: "add";
-	id: string;
-	path: string;
-}
+export interface AddAction { kind: "add"; id: string; path: string; }
 export interface PullAction {
-	kind: "pull";
-	id: string;
-	serverId: string;
-	path: string;
-	conflictedLocally: boolean;
+	kind: "pull"; id: string; serverId: string;
+	path: string; conflictedLocally: boolean;
 }
 export interface PushAction {
-	kind: "push";
-	id: string;
-	serverId: string | null;
-	path: string;
-	previousPath: string | null;
+	kind: "push"; id: string; serverId: string | null;
+	path: string; previousPath: string | null;
+}
+// Server-side rename. Ordered before pulls so a same-cycle pull writes at
+// the post-rename path. Engine moves via app.fileManager.renameFile.
+export interface RenameLocalAction {
+	kind: "rename-local"; id: string; serverId: string;
+	fromPath: string; toPath: string;
 }
 export interface StaleLocalDeleteAction {
-	kind: "stale-local-delete";
-	id: string;
-	serverId: string;
-	path: string;
+	kind: "stale-local-delete"; id: string; serverId: string; path: string;
 }
 export interface ServerDeletedAction {
-	kind: "server-deleted";
-	id: string;
-	serverId: string;
-	path: string;
+	kind: "server-deleted"; id: string; serverId: string; path: string;
 }
 
 export interface ReconcileInput {
 	serverManifest: readonly ManifestEntry[];
 	localManifest: readonly ManifestRecord[];
 	scanned: readonly ScannedFile[];
+	excludedFolders?: readonly string[];
 }
+
+export interface DuplicateUuid { uuid: string; paths: string[]; }
 
 export interface ReconcileOutput {
 	actions: SyncAction[];
-	// Diagnostic counters surfaced via the status bar / audit log.
 	stats: {
-		add: number;
-		pull: number;
-		push: number;
-		conflict: number;
-		staleLocalDelete: number;
-		serverDeleted: number;
+		add: number; pull: number; push: number; renameLocal: number;
+		conflict: number; staleLocalDelete: number;
+		serverDeleted: number; duplicateUuid: number;
 	};
+	duplicateUuids: DuplicateUuid[];
 }
 
-// Reconciles three views of the vault into a deterministic ordered action list.
-//
-// Action ordering invariant: pulls before pushes before adds. Pulls first so
-// the local manifest is up-to-date before any push uses base_version; pushes
-// before adds so existing-file edits propagate before brand-new files (which
-// are server-side allocations) compete for the same path.
-//
-// Each action carries a stable id (action.id) so the engine can resume after
-// a partial failure: replaying reconcile after a crash produces the same
-// action ids for the same residual work.
+// Reconciles three views (server delta + local manifest + vault scan) into an
+// ordered, deterministic action list. Order: server-deletes → rename-local →
+// pulls → pushes → adds → stale-local-deletes. Action ids are stable across
+// runs so a post-crash replay produces the same ids for residual work.
 export function reconcile(input: ReconcileInput): ReconcileOutput {
+	const excluded = input.excludedFolders ?? [];
+
+	// Step A: filter excluded paths from all three views.
+	const serverManifest = input.serverManifest.filter(
+		(e) => !isExcludedPath(e.path, excluded),
+	);
+	const localManifest = input.localManifest.filter(
+		(r) => !isExcludedPath(r.path, excluded),
+	);
+	const scannedFiles = input.scanned.filter(
+		(f) => !isExcludedPath(f.path, excluded),
+	);
+
 	const serverById = new Map<string, ManifestEntry>();
-	for (const e of input.serverManifest) serverById.set(e.id, e);
-
+	for (const e of serverManifest) serverById.set(e.id, e);
 	const localById = new Map<string, ManifestRecord>();
-	for (const e of input.localManifest) localById.set(e.id, e);
+	for (const r of localManifest) localById.set(r.id, r);
 
-	const scannedByUuid = new Map<string, ScannedFile>();
+	// Step B: detect duplicate huma_uuid (corruption — refuse to act).
+	const scannedByUuidAll = new Map<string, ScannedFile[]>();
 	const scannedNoUuid: ScannedFile[] = [];
-	for (const f of input.scanned) {
-		if (f.uuid) scannedByUuid.set(f.uuid, f);
-		else scannedNoUuid.push(f);
+	for (const f of scannedFiles) {
+		if (f.uuid) {
+			const existing = scannedByUuidAll.get(f.uuid);
+			if (existing) existing.push(f);
+			else scannedByUuidAll.set(f.uuid, [f]);
+		} else scannedNoUuid.push(f);
 	}
+	const scannedByUuid = new Map<string, ScannedFile>();
+	const duplicateUuids: DuplicateUuid[] = [];
+	for (const [uuid, files] of scannedByUuidAll) {
+		if (files.length === 1) scannedByUuid.set(uuid, files[0]!);
+		else duplicateUuids.push({ uuid, paths: files.map((f) => f.path) });
+	}
+	const duplicateUuidSet = new Set(duplicateUuids.map((d) => d.uuid));
+
+	// Step C: synthetic-server-entry promotion. Delta omits unchanged rows;
+	// promote local-tracked UUIDs so edits/renames since lastSince reconcile.
+	const serverByIdEffective = new Map<string, ManifestEntry>(serverById);
+	for (const local of localManifest) {
+		if (serverByIdEffective.has(local.id)) continue;
+		serverByIdEffective.set(local.id, {
+			id: local.id,
+			path: local.path,
+			version: local.version,
+			hash: local.hash,
+			deleted_at: null,
+		});
+	}
+
+	// Step D: dispatch decide() over the union of UUIDs across all views.
+	const uuidUnion = new Set<string>();
+	for (const id of serverByIdEffective.keys()) uuidUnion.add(id);
+	for (const id of localById.keys()) uuidUnion.add(id);
+	for (const id of scannedByUuid.keys()) uuidUnion.add(id);
 
 	const pulls: PullAction[] = [];
 	const pushes: PushAction[] = [];
-	const adds: AddAction[] = [];
+	const renamesLocal: RenameLocalAction[] = [];
 	const staleDeletes: StaleLocalDeleteAction[] = [];
 	const serverDeletes: ServerDeletedAction[] = [];
 	let conflictCount = 0;
 
-	// Pass 1: every server-known file.
-	for (const serverEntry of input.serverManifest) {
-		const local = localById.get(serverEntry.id);
-		const scanned = scannedByUuid.get(serverEntry.id);
+	for (const uuid of uuidUnion) {
+		const serverPeek = serverByIdEffective.get(uuid) ?? null;
+		// Guard B — duplicate-uuid skip. Tombstones still process.
+		if (
+			duplicateUuidSet.has(uuid) &&
+			(!serverPeek || serverPeek.deleted_at === null)
+		) continue;
 
-		if (serverEntry.deleted_at !== null) {
-			// Server-side tombstone. Plugin drops the local manifest row; the
-			// vault file (if any) is left alone — user decides what to do.
-			if (local || scanned) {
-				serverDeletes.push({
-					kind: "server-deleted",
-					id: actionId("server-deleted", serverEntry.id),
-					serverId: serverEntry.id,
-					path: scanned?.path ?? local?.path ?? serverEntry.path,
-				});
-			}
-			continue;
-		}
+		const server = serverPeek;
+		const local = localById.get(uuid) ?? null;
+		const scan = scannedByUuid.get(uuid) ?? null;
 
-		if (!scanned) {
-			if (local) {
-				// Locally deleted but server still has it. Delete sync is
-				// deferred to v1.1 — surface as stale.
-				staleDeletes.push({
-					kind: "stale-local-delete",
-					id: actionId("stale-local-delete", serverEntry.id),
-					serverId: serverEntry.id,
-					path: serverEntry.path,
-				});
-			} else {
-				// Server has it, plugin has never seen it. Pull.
-				pulls.push({
-					kind: "pull",
-					id: actionId("pull", serverEntry.id),
-					serverId: serverEntry.id,
-					path: serverEntry.path,
-					conflictedLocally: false,
-				});
-			}
-			continue;
-		}
-
-		const localHashMatchesManifest =
-			local !== undefined && local.hash === scanned.hash;
-		const localEdited = local !== undefined && !localHashMatchesManifest;
-		const serverNewer =
-			local === undefined || serverEntry.version > local.version;
-
-		if (serverNewer && !localEdited) {
-			// Clean pull case.
-			pulls.push({
-				kind: "pull",
-				id: actionId("pull", serverEntry.id),
-				serverId: serverEntry.id,
-				path: scanned.path,
-				conflictedLocally: false,
-			});
-		} else if (serverNewer && localEdited) {
-			// Both sides moved. Push will trigger server-side three-way merge;
-			// reconcile emits a push and lets the push worker (task 6) decide
-			// accept / merge_clean / merge_dirty.
-			conflictCount++;
-			pushes.push({
-				kind: "push",
-				id: actionId("push", serverEntry.id),
-				serverId: serverEntry.id,
-				path: scanned.path,
-				previousPath:
-					local && local.path !== scanned.path ? local.path : null,
-			});
-		} else if (localEdited) {
-			pushes.push({
-				kind: "push",
-				id: actionId("push", serverEntry.id),
-				serverId: serverEntry.id,
-				path: scanned.path,
-				previousPath:
-					local && local.path !== scanned.path ? local.path : null,
-			});
-		} else if (
-			local !== undefined &&
-			local.path !== scanned.path
+		// Server-side rename: emit rename-local separately, then rebind both
+		// scan and local to server.path so decide produces the same-cycle
+		// pull/push at the post-rename path WITHOUT firing the plugin-side
+		// rename branch. Keeps decide() at 3 args.
+		let effectiveScan: ScannedFile | null = scan;
+		let effectiveLocal: ManifestRecord | null = local;
+		if (
+			server && local && scan &&
+			server.deleted_at === null &&
+			server.path !== local.path && scan.path === local.path
 		) {
-			// Pure rename — no body change but path moved. Push the rename.
-			pushes.push({
-				kind: "push",
-				id: actionId("push", serverEntry.id),
-				serverId: serverEntry.id,
-				path: scanned.path,
-				previousPath: local.path,
+			renamesLocal.push({
+				kind: "rename-local",
+				id: actionId("rename-local", server.id),
+				serverId: server.id,
+				fromPath: local.path, toPath: server.path,
 			});
+			effectiveScan = { ...scan, path: server.path };
+			effectiveLocal = { ...local, path: server.path };
 		}
-		// else: in-sync, no action.
+
+		const action = decide(server, effectiveLocal, effectiveScan);
+		if (!action) continue;
+
+		if (
+			action.kind === "push" &&
+			server && local && scan &&
+			server.version > local.version &&
+			scan.hash !== local.hash
+		) conflictCount++;
+
+		switch (action.kind) {
+			case "pull": pulls.push(action); break;
+			case "push": pushes.push(action); break;
+			case "stale-local-delete": staleDeletes.push(action); break;
+			case "server-deleted": serverDeletes.push(action); break;
+			case "rename-local": renamesLocal.push(action); break;
+			case "add": break;
+		}
 	}
 
-	// Pass 2: scanned files with a huma_uuid the server doesn't know about.
-	// Treat as adds — server will reject if the UUID conflicts.
-	for (const [uuid, scanned] of scannedByUuid) {
-		if (serverById.has(uuid)) continue;
-		// The scanner saw a UUID frontmatter, but neither the server nor
-		// local manifest knows it. Two cases: (a) bulk import wrote the UUID
-		// before the server registered it, (b) UUID frontmatter is stale
-		// from a previous deleted-then-recreated file. Either way the server
-		// is the authority — push and let it allocate or recognise.
-		pushes.push({
-			kind: "push",
-			id: actionId("push", uuid),
-			serverId: null,
-			path: scanned.path,
-			previousPath: null,
-		});
-	}
-
-	// Pass 3: scanned files with no UUID at all — first-push adds.
-	for (const scanned of scannedNoUuid) {
-		adds.push({
-			kind: "add",
-			id: actionId("add", scanned.path),
-			path: scanned.path,
-		});
-	}
+	// Step E: trivial adds loop — scanned files with no huma_uuid.
+	const adds: AddAction[] = scannedNoUuid.map((scan) => ({
+		kind: "add",
+		id: actionId("add", scan.path),
+		path: scan.path,
+	}));
 
 	const actions: SyncAction[] = [
-		...serverDeletes,
-		...pulls,
-		...pushes,
-		...adds,
-		...staleDeletes,
+		...serverDeletes, ...renamesLocal, ...pulls,
+		...pushes, ...adds, ...staleDeletes,
 	];
 
 	return {
 		actions,
 		stats: {
-			add: adds.length,
-			pull: pulls.length,
-			push: pushes.length,
-			conflict: conflictCount,
+			add: adds.length, pull: pulls.length, push: pushes.length,
+			renameLocal: renamesLocal.length, conflict: conflictCount,
 			staleLocalDelete: staleDeletes.length,
 			serverDeleted: serverDeletes.length,
+			duplicateUuid: duplicateUuids.length,
 		},
+		duplicateUuids,
 	};
+}
+
+// Pure per-UUID decision. Caller handles excluded-folder filtering,
+// duplicate-uuid skipping, synthetic-server-entry promotion, and server-side
+// rename emission (with scan-/local-shim path=server.path). Locked to 3
+// parameters per ROADMAP success criterion #1. Returns null when no action.
+export function decide(
+	server: ManifestEntry | null,
+	local: ManifestRecord | null,
+	scan: ScannedFile | null,
+): SyncAction | null {
+	if (server && server.deleted_at !== null) {
+		if (!local && !scan) return null;
+		return {
+			kind: "server-deleted",
+			id: actionId("server-deleted", server.id),
+			serverId: server.id,
+			path: scan?.path ?? local?.path ?? server.path,
+		};
+	}
+
+	if (server && !scan) {
+		if (local) return {
+			kind: "stale-local-delete",
+			id: actionId("stale-local-delete", server.id),
+			serverId: server.id,
+			path: server.path,
+		};
+		return {
+			kind: "pull",
+			id: actionId("pull", server.id),
+			serverId: server.id,
+			path: server.path,
+			conflictedLocally: false,
+		};
+	}
+
+	if (!server && scan) {
+		// no UUID → adds-loop handles it; local present → impossible after promotion.
+		if (!scan.uuid || local) return null;
+		return {
+			kind: "push",
+			id: actionId("push", scan.uuid),
+			serverId: null,
+			path: scan.path,
+			previousPath: null,
+		};
+	}
+
+	// server live, scan present — sub-matrix #6. serverRenamed handled upstream.
+	if (!server || !scan) return null;
+	const localEdited = local !== null && local.hash !== scan.hash;
+	const serverNewer = local === null || server.version > local.version;
+
+	if (serverNewer && !localEdited) return {
+		kind: "pull",
+		id: actionId("pull", server.id),
+		serverId: server.id,
+		path: scan.path,
+		conflictedLocally: false,
+	};
+	if (localEdited) return {
+		kind: "push",
+		id: actionId("push", server.id),
+		serverId: server.id,
+		path: scan.path,
+		previousPath: local && local.path !== scan.path ? local.path : null,
+	};
+	if (local && local.path !== scan.path) return {
+		kind: "push",
+		id: actionId("push", server.id),
+		serverId: server.id,
+		path: scan.path,
+		previousPath: local.path,
+	};
+	return null;
 }
 
 function actionId(kind: string, key: string): string {

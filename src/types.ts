@@ -33,6 +33,10 @@ export interface TokenResponse {
 export interface ApiError {
 	error: string;
 	error_description?: string;
+	// Set by /api/vault/pull on `not_found` to name the offending id so the
+	// plugin can drop it from the local manifest instead of looping on a
+	// stale row forever.
+	id?: string;
 }
 
 export type DevicePollError =
@@ -103,7 +107,14 @@ export type AuditEvent =
 	| "push_reject"
 	| "merge_clean"
 	| "merge_dirty"
-	| "path_change";
+	| "path_change"
+	| "pull_apply"
+	| "pull_drop"
+	| "server_deleted"
+	| "stale_local_delete"
+	| "duplicate_uuid"
+	| "token_scan_warning"
+	| "auth_error";
 
 export interface AuditEntry {
 	timestamp: string;

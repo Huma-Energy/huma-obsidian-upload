@@ -3,13 +3,24 @@ import type { VaultApiClient } from "../client/vault-api";
 import type { ManifestRecord } from "../settings";
 import type { AuditEntry, PushRequest, PushResponse } from "../types";
 import { emitConflict } from "./conflict";
-import { stringifyFile, withHumaUuid } from "./frontmatter";
+import {
+	HUMA_UUID_KEY,
+	parseFile,
+	replaceFileBody,
+	stringifyFile,
+	withHumaUuid,
+} from "./frontmatter";
 import { sha256Hex } from "./hash";
 import type { ScannedFile } from "./scan";
 import type { PushAction, AddAction } from "./reconcile";
+import type { SelfWriteTracker } from "./self-write-tracker";
 
 export const PUSH_MAX_RETRIES = 3;
 export const PUSH_INITIAL_BACKOFF_MS = 500;
+// Flush the manifest at most every Nth successful push outcome (and always at
+// the end of the worker run). Each flush re-serializes the entire plugin data
+// blob; per-outcome flushes thrash data.json on large cycles.
+export const PUSH_MANIFEST_FLUSH_EVERY = 25;
 
 export interface PushAttemptInput {
 	action: PushAction | AddAction;
@@ -34,6 +45,10 @@ export interface PushOutcome {
 export interface PushWorkerHandlers {
 	onProgress?(p: { completed: number; total: number }): void;
 	sleep?: (ms: number) => Promise<void>;
+	// Called after each successful outcome with the running manifest snapshot.
+	// Lets the engine persist progress incrementally so a mid-cycle crash
+	// doesn't lose pushes that already returned successfully.
+	onManifestUpdate?: (manifest: ManifestRecord[]) => Promise<void>;
 }
 
 export interface PushWorkerResult {
@@ -49,6 +64,7 @@ export async function runPushWorker(
 	app: App,
 	inputs: readonly PushAttemptInput[],
 	currentManifest: readonly ManifestRecord[],
+	tracker: SelfWriteTracker,
 	handlers: PushWorkerHandlers = {},
 ): Promise<PushWorkerResult> {
 	const sleep = handlers.sleep ?? defaultSleep;
@@ -57,12 +73,23 @@ export async function runPushWorker(
 
 	const outcomes: PushOutcome[] = [];
 
+	let pendingSinceFlush = 0;
 	for (let i = 0; i < inputs.length; i++) {
 		const input = inputs[i]!;
-		const outcome = await pushOne(api, app, input, sleep);
+		const outcome = await pushOne(api, app, input, tracker, sleep);
 		outcomes.push(outcome);
 		if (outcome.result.kind !== "deferred") {
 			manifestById.set(outcome.result.record.id, outcome.result.record);
+			pendingSinceFlush++;
+		}
+		const isLast = i === inputs.length - 1;
+		if (
+			handlers.onManifestUpdate &&
+			pendingSinceFlush > 0 &&
+			(pendingSinceFlush >= PUSH_MANIFEST_FLUSH_EVERY || isLast)
+		) {
+			await handlers.onManifestUpdate(Array.from(manifestById.values()));
+			pendingSinceFlush = 0;
 		}
 		handlers.onProgress?.({ completed: i + 1, total: inputs.length });
 	}
@@ -77,6 +104,7 @@ async function pushOne(
 	api: VaultApiClient,
 	app: App,
 	input: PushAttemptInput,
+	tracker: SelfWriteTracker,
 	sleep: (ms: number) => Promise<void>,
 ): Promise<PushOutcome> {
 	const req = buildRequest(input);
@@ -84,7 +112,7 @@ async function pushOne(
 	for (let attempt = 0; attempt < PUSH_MAX_RETRIES; attempt++) {
 		try {
 			const response = await api.push(req);
-			return await applyResponse(app, input, response);
+			return await applyResponse(app, input, response, tracker);
 		} catch (err) {
 			lastErr = err;
 			if (attempt < PUSH_MAX_RETRIES - 1) {
@@ -108,12 +136,11 @@ async function pushOne(
 
 function buildRequest(input: PushAttemptInput): PushRequest {
 	const { action, scanned, localManifest } = input;
-	const isAdd = action.kind === "add";
 	return {
-		id: isAdd ? null : (action as PushAction).serverId ?? null,
+		id: action.kind === "add" ? null : action.serverId ?? null,
 		base_version: localManifest?.version ?? null,
 		path: scanned.path,
-		previous_path: isAdd ? null : (action as PushAction).previousPath,
+		previous_path: action.kind === "add" ? null : action.previousPath,
 		body: scanned.body,
 		frontmatter: emptyToNull(scanned.frontmatter),
 		client_mtime: new Date(scanned.mtime || Date.now()).toISOString(),
@@ -124,15 +151,12 @@ async function applyResponse(
 	app: App,
 	input: PushAttemptInput,
 	response: PushResponse,
+	tracker: SelfWriteTracker,
 ): Promise<PushOutcome> {
 	const path = input.scanned.path;
 	switch (response.action) {
 		case "accept": {
-			// First-push: write huma_uuid back into the file's frontmatter so
-			// the next scan sees it. For non-first-push accepts the UUID is
-			// already in frontmatter; rewrite is a no-op text-wise but we
-			// recompute the body hash either way.
-			await ensureUuidInVault(app, path, input.scanned, response.id);
+			await ensureUuidInVault(app, path, input.scanned, response.id, tracker);
 			const hash = await sha256Hex(input.scanned.body);
 			const record: ManifestRecord = {
 				id: response.id,
@@ -158,8 +182,12 @@ async function applyResponse(
 				response.id,
 			);
 			const text = stringifyFile(response.body, frontmatter);
+			// Hash the parsed-back body so subsequent scans match this entry.
+			const onDiskBody = parseFile(text).body;
+			const hashBeforeWrite = await sha256Hex(onDiskBody);
+			tracker.record(path, hashBeforeWrite);
 			await writeMarkdown(app, path, text);
-			const hash = await sha256Hex(response.body);
+			const hash = hashBeforeWrite;
 			const record: ManifestRecord = {
 				id: response.id,
 				path,
@@ -179,14 +207,28 @@ async function applyResponse(
 			};
 		}
 		case "merge_dirty": {
-			const emission = await emitConflict(app, {
-				id: response.id,
-				path,
-				localBody: input.scanned.body,
-				serverBody: response.server_body,
-				serverFrontmatter: response.server_frontmatter,
-			});
-			const hash = await sha256Hex(response.server_body);
+			const emission = await emitConflict(
+				app,
+				{
+					id: response.id,
+					path,
+					localBody: input.scanned.body,
+					serverBody: response.server_body,
+					serverFrontmatter: response.server_frontmatter,
+				},
+				tracker,
+			);
+			// Hash the parsed-back body of the server-replaced original so the
+			// next scan agrees with this manifest entry.
+			const replacedFrontmatter = withHumaUuid(
+				response.server_frontmatter ?? {},
+				response.id,
+			);
+			const replacedText = stringifyFile(
+				response.server_body,
+				replacedFrontmatter,
+			);
+			const hash = await sha256Hex(parseFile(replacedText).body);
 			const record: ManifestRecord = {
 				id: response.id,
 				path,
@@ -218,11 +260,24 @@ async function ensureUuidInVault(
 	path: string,
 	scanned: ScannedFile,
 	uuid: string,
+	tracker: SelfWriteTracker,
 ): Promise<void> {
 	if (scanned.frontmatter["huma_uuid"] === uuid) return;
-	const frontmatter = withHumaUuid(scanned.frontmatter, uuid);
-	const text = stringifyFile(scanned.body, frontmatter);
-	await writeMarkdown(app, path, text);
+	const file = app.vault.getAbstractFileByPath(path);
+	if (!file || !isMarkdownTFile(file)) {
+		throw new Error(
+			`File ${path} disappeared between scan and push apply.`,
+		);
+	}
+	// Body hash is unchanged (we only mutate frontmatter). Record before the
+	// write so the follow-up modify event is suppressed.
+	tracker.record(path, scanned.hash);
+	await app.fileManager.processFrontMatter(
+		file,
+		(fm: Record<string, unknown>) => {
+			fm[HUMA_UUID_KEY] = uuid;
+		},
+	);
 }
 
 async function writeMarkdown(
@@ -232,7 +287,7 @@ async function writeMarkdown(
 ): Promise<void> {
 	const existing = app.vault.getAbstractFileByPath(path);
 	if (existing && isMarkdownTFile(existing)) {
-		await app.vault.modify(existing, text);
+		await replaceFileBody(app, existing, text);
 	} else if (!existing) {
 		await app.vault.create(path, text);
 	} else {

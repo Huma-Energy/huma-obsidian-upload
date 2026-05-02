@@ -1,1 +1,326 @@
-/* Huma Vault Sync — plugin styles. Empty at v1; reserved for future status-bar/conflict-view styling. */
+/* Huma Vault Sync — plugin styles. */
+
+.huma-status-bar {
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.huma-status-icon {
+	display: inline-flex;
+	align-items: center;
+}
+
+.huma-status-icon svg {
+	width: 14px;
+	height: 14px;
+}
+
+.huma-status-prefix {
+	font-weight: 500;
+}
+
+.huma-status-label {
+	font-size: 0.85em;
+	color: var(--text-muted);
+}
+
+.huma-status--idle .huma-status-icon { color: var(--text-muted); }
+.huma-status--signed-out .huma-status-icon { color: var(--text-muted); }
+.huma-status--syncing .huma-status-icon { color: var(--text-accent); }
+.huma-status--error .huma-status-icon { color: var(--text-error); }
+.huma-status--conflict .huma-status-icon { color: var(--text-warning); }
+.huma-status--blocked .huma-status-icon { color: var(--text-error); }
+
+.huma-excluded-folders {
+	width: 100%;
+	font-family: var(--font-monospace);
+}
+
+.huma-audit-log {
+	user-select: text;
+	cursor: text;
+	max-height: 60vh;
+	overflow-y: auto;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 4px;
+	padding: 4px 8px;
+	font-family: var(--font-monospace);
+	font-size: 0.85em;
+}
+
+/* Single toolbar holding action buttons + filter pills on one row.
+   Scoped under .modal-content with !important to defeat Obsidian's
+   modal-content rules that otherwise treat buttons as block-level
+   full-width children. Overflows horizontally on a narrow modal. */
+.modal-content .huma-audit-toolbar {
+	display: flex !important;
+	flex-direction: row !important;
+	flex-wrap: nowrap !important;
+	align-items: center;
+	gap: 6px;
+	margin-bottom: 12px;
+	overflow-x: auto;
+}
+
+.modal-content .huma-audit-toolbar > button {
+	flex: 0 0 auto !important;
+	width: auto !important;
+	display: inline-block !important;
+	white-space: nowrap;
+}
+
+.huma-audit-toolbar-sep {
+	flex: 0 0 auto;
+	width: 1px;
+	height: 1.5em;
+	background-color: var(--background-modifier-border);
+	margin: 0 4px;
+}
+
+.huma-audit-filter-btn.is-active {
+	background-color: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+.huma-audit-row {
+	display: grid;
+	grid-template-columns: minmax(140px, auto) minmax(110px, auto) minmax(0, 1fr);
+	column-gap: 8px;
+	row-gap: 2px;
+	padding: 4px 0;
+	border-bottom: 1px solid var(--background-modifier-border);
+	word-break: break-word;
+}
+
+.huma-audit-row:last-child {
+	border-bottom: none;
+}
+
+.huma-audit-ts {
+	color: var(--text-muted);
+	white-space: nowrap;
+}
+
+.huma-audit-event {
+	color: var(--text-accent);
+	font-weight: 600;
+}
+
+.huma-audit-id {
+	color: var(--text-muted);
+	grid-column: 1 / -1;
+	font-size: 0.85em;
+}
+
+.huma-audit-id:empty {
+	display: none;
+}
+
+.huma-audit-path {
+	grid-column: 3;
+	grid-row: 1;
+}
+
+.huma-audit-detail {
+	grid-column: 1 / -1;
+	color: var(--text-muted);
+}
+
+.huma-audit-detail:empty {
+	display: none;
+}
+
+.huma-severity-warning .huma-audit-event {
+	color: var(--text-warning);
+}
+
+.huma-severity-error .huma-audit-event {
+	color: var(--text-error);
+}
+
+.huma-severity-error {
+	background-color: rgba(var(--background-modifier-error-rgb, 230, 80, 80), 0.08);
+}
+
+.huma-severity-warning {
+	background-color: rgba(var(--background-modifier-warning-rgb, 230, 180, 80), 0.06);
+}
+
+.huma-audit-log--error .huma-audit-row:not(.huma-severity-error) { display: none; }
+.huma-audit-log--warning .huma-audit-row:not(.huma-severity-warning) { display: none; }
+.huma-audit-log--info .huma-audit-row:not(.huma-severity-info) { display: none; }
+
+.huma-audit-row--clickable {
+	cursor: pointer;
+}
+
+.huma-audit-row--clickable:hover,
+.huma-audit-row--clickable:focus-visible {
+	background-color: var(--background-modifier-hover);
+	outline: none;
+}
+
+.huma-stale-tip {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin-bottom: 1em;
+}
+
+.huma-stale-list {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5em;
+}
+
+.huma-stale-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 1em;
+	padding: 0.6em 0.8em;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	background-color: var(--background-secondary);
+}
+
+.huma-stale-info {
+	display: flex;
+	flex-direction: column;
+	gap: 0.2em;
+	min-width: 0;
+	flex: 1;
+}
+
+.huma-stale-path {
+	font-weight: var(--font-semibold);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.huma-stale-meta {
+	display: flex;
+	gap: 1em;
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
+.huma-stale-id {
+	font-family: var(--font-monospace);
+}
+
+.huma-stale-actions {
+	display: flex;
+	gap: 0.4em;
+	flex-shrink: 0;
+}
+
+.huma-signin-tip {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin-bottom: 1em;
+}
+
+.huma-signin-code-row {
+	display: flex;
+	justify-content: center;
+	margin: 1.5em 0 1em;
+}
+
+.huma-signin-code {
+	font-family: var(--font-monospace);
+	font-size: 2em;
+	font-weight: var(--font-bold);
+	letter-spacing: 0.1em;
+	padding: 0.4em 0.8em;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	background-color: var(--background-secondary);
+	user-select: all;
+}
+
+.huma-signin-actions {
+	display: flex;
+	justify-content: center;
+	gap: 0.5em;
+	margin-bottom: 1em;
+}
+
+.huma-signin-status {
+	text-align: center;
+	color: var(--text-muted);
+	margin-bottom: 0.5em;
+}
+
+.huma-signin-expiry {
+	text-align: center;
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	margin-bottom: 1em;
+}
+
+.huma-signin-expiry--low {
+	color: var(--text-warning);
+}
+
+.huma-signin-footer {
+	display: flex;
+	justify-content: flex-end;
+	gap: 0.5em;
+}
+
+.huma-welcome-tip {
+	color: var(--text-muted);
+	margin-bottom: 1em;
+}
+
+.huma-welcome-error {
+	color: var(--text-error);
+	font-size: var(--font-ui-small);
+	margin-bottom: 1em;
+}
+
+.huma-welcome-url {
+	margin: 1.5em 0;
+	padding: 1em;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	background-color: var(--background-secondary);
+	text-align: center;
+}
+
+.huma-welcome-url-label {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	margin: 0 0 0.4em;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+
+.huma-welcome-url-value {
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-medium);
+	margin: 0;
+	word-break: break-all;
+}
+
+.huma-welcome-advanced {
+	margin: 1em 0;
+}
+
+.huma-welcome-advanced > summary {
+	cursor: pointer;
+	color: var(--text-accent);
+	font-size: var(--font-ui-small);
+	margin-bottom: 0.5em;
+}
+
+.huma-welcome-footer {
+	display: flex;
+	justify-content: flex-end;
+	gap: 0.5em;
+	margin-top: 1.5em;
+}
+

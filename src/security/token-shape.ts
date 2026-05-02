@@ -6,7 +6,7 @@
 // edit, not silent token leakage. The plan's non-negotiable contract is "no
 // token-shaped string under the vault root, ever."
 
-export const TOKEN_SHAPED_PATTERN = /[A-Za-z0-9_\-]{40,}/g;
+export const TOKEN_SHAPED_PATTERN = /[A-Za-z0-9_-]{40,}/g;
 
 export interface TokenShapedMatch {
 	value: string;
@@ -24,7 +24,7 @@ export function findTokenShapedStrings(text: string): TokenShapedMatch[] {
 
 export function looksLikeToken(value: string): boolean {
 	if (value.length < 40) return false;
-	return /^[A-Za-z0-9_\-]+$/.test(value);
+	return /^[A-Za-z0-9_-]+$/.test(value);
 }
 
 // True if any of `strings` resemble a stored access/refresh token. Used by the

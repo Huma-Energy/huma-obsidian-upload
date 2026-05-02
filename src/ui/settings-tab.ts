@@ -3,6 +3,7 @@ import {
 	SYNC_INTERVAL_MAX_SECONDS,
 	SYNC_INTERVAL_MIN_SECONDS,
 } from "../settings";
+import { normalizeExcludedFolders } from "../sync/exclusion";
 import type HumaVaultSyncPlugin from "../main";
 
 export class HumaSettingsTab extends PluginSettingTab {
@@ -17,16 +18,23 @@ export class HumaSettingsTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
-		containerEl.createEl("h2", { text: "Huma Vault Sync" });
+		this.renderAuthSection(containerEl);
+		this.renderSyncActionSection(containerEl);
+		this.renderServerUrlSection(containerEl);
+		this.renderSyncIntervalSection(containerEl);
+		this.renderExclusionsSection(containerEl);
+		this.renderObsidianSyncSection(containerEl);
+		this.renderSyncLogSection(containerEl);
+	}
 
+	private renderServerUrlSection(containerEl: HTMLElement): void {
 		new Setting(containerEl)
 			.setName("Server base URL")
 			.setDesc(
-				"Origin of the Huma dashboard, e.g. https://huma.energy. No trailing slash.",
+				"This is where your notes will sync to. Most users should leave this as is. Change only if you've been given a custom server URL.",
 			)
 			.addText((text) =>
-				text
-					.setPlaceholder("https://huma.energy")
+				text.setPlaceholder("https://humagreenfield.netlify.app")
 					.setValue(this.plugin.data.settings.serverBaseUrl)
 					.onChange(async (value) => {
 						const trimmed = value.trim().replace(/\/+$/, "");
@@ -35,9 +43,78 @@ export class HumaSettingsTab extends PluginSettingTab {
 						this.plugin.rebuildHttpClient();
 					}),
 			);
+	}
 
-		this.renderAuthSection(containerEl);
-		this.renderSyncIntervalSection(containerEl);
+	private renderSyncActionSection(containerEl: HTMLElement): void {
+		// Disabled when not signed in — sync requires tokens. The sync
+		// interval setting below configures cadence; this button forces
+		// an immediate cycle (same code path as the command palette
+		// "Sync now" command and the ribbon icon).
+		const signedIn = this.plugin.data.tokens !== null;
+		const intervalSec = this.plugin.data.settings.syncIntervalSeconds;
+		new Setting(containerEl)
+			.setName("Sync now")
+			.setDesc(
+				`Run a sync right now. Otherwise the plugin syncs automatically every ${intervalSec} seconds.`,
+			)
+			.addButton((btn) => {
+				btn.setButtonText("Sync now").setCta();
+				if (!signedIn) {
+					btn.setDisabled(true);
+				}
+				btn.onClick(async () => {
+					btn.setDisabled(true);
+					btn.setButtonText("Syncing…");
+					try {
+						await this.plugin.runFullSync();
+					} catch (err) {
+						new Notice(
+							`Huma sync failed: ${describeError(err)}`,
+							6000,
+						);
+					} finally {
+						btn.setButtonText("Sync now");
+						btn.setDisabled(!signedIn);
+					}
+				});
+			});
+	}
+
+	private renderObsidianSyncSection(containerEl: HTMLElement): void {
+		const sync = getInternalSyncPlugin(this.app);
+		if (!sync) return;
+		/* eslint-disable obsidianmd/ui/sentence-case -- "Obsidian Sync" is a product name */
+		new Setting(containerEl)
+			.setName("Disable Obsidian Sync")
+			.setDesc(
+				"Obsidian's built-in Sync core plugin shows a status icon for its remote-vault subscription. If you don't use Obsidian Sync, disable it here so its icon doesn't sit next to Huma's status and look like a sync error.",
+			)
+			.addToggle((toggle) =>
+				toggle.setValue(!sync.enabled).onChange(async (disabled) => {
+					if (disabled) {
+						await sync.disable?.();
+						new Notice("Obsidian Sync core plugin disabled.", 3000);
+					} else {
+						await sync.enable?.();
+						new Notice("Obsidian Sync core plugin enabled.", 3000);
+					}
+				}),
+			);
+		/* eslint-enable obsidianmd/ui/sentence-case */
+	}
+
+	private renderSyncLogSection(containerEl: HTMLElement): void {
+		new Setting(containerEl)
+			.setName("Sync log")
+			.setDesc(
+				// eslint-disable-next-line obsidianmd/ui/sentence-case -- "Huma" is the product name
+				"View the last 200 sync events from this device. Helpful for tracing what the plugin did or didn't do. The Huma server has the full history.",
+			)
+			.addButton((btn) =>
+				btn.setButtonText("Show sync log").onClick(() => {
+					this.plugin.openAuditLogModal();
+				}),
+			);
 	}
 
 	private renderAuthSection(containerEl: HTMLElement): void {
@@ -78,11 +155,54 @@ export class HumaSettingsTab extends PluginSettingTab {
 		}
 	}
 
+	private renderExclusionsSection(containerEl: HTMLElement): void {
+		new Setting(containerEl)
+			.setName("Excluded folders")
+			.setDesc(
+				// eslint-disable-next-line obsidianmd/ui/sentence-case -- "Huma" is the product name
+				"One folder per line. Files inside these folders won't sync to Huma. Already-synced files stay on the server frozen at their last version — archive them in the Huma web app to remove them entirely.",
+			)
+			.addTextArea((area) => {
+				// eslint-disable-next-line obsidianmd/ui/sentence-case -- folder-path examples, not UI prose
+				area.setPlaceholder("drafts\nbusiness/private");
+				area.setValue(
+					this.plugin.data.settings.excludedFolders.join("\n"),
+				);
+				// Save on every keystroke. Defer the "added N folders"
+				// Notice with a debounce: 1.5s after the user stops typing
+				// we look at what was added vs the baseline (last value the
+				// Notice acknowledged) and fire once. Avoids per-keystroke
+				// spam without depending on blur events, which Obsidian
+				// settings panels don't always emit.
+				let baseline = [...this.plugin.data.settings.excludedFolders];
+				let timer: ReturnType<typeof setTimeout> | null = null;
+				area.onChange(async (value) => {
+					this.plugin.data.settings.excludedFolders =
+						normalizeExcludedFolders(value.split("\n"));
+					await this.plugin.saveAll();
+					if (timer) clearTimeout(timer);
+					timer = setTimeout(() => {
+						const next = this.plugin.data.settings.excludedFolders;
+						const added = next.filter((f) => !baseline.includes(f));
+						if (added.length > 0) {
+							new Notice(
+								`Huma: ${added.length} folder(s) excluded from sync. Files already on the server remain — archive them on the dashboard to remove.`,
+								8000,
+							);
+							baseline = [...next];
+						}
+					}, 1500);
+				});
+				area.inputEl.rows = 4;
+				area.inputEl.addClass("huma-excluded-folders");
+			});
+	}
+
 	private renderSyncIntervalSection(containerEl: HTMLElement): void {
 		new Setting(containerEl)
 			.setName("Sync interval (seconds)")
 			.setDesc(
-				`How often the plugin polls the dashboard for changes on desktop. Mobile syncs only on foreground resume. Min ${SYNC_INTERVAL_MIN_SECONDS}, max ${SYNC_INTERVAL_MAX_SECONDS}.`,
+				`How often the plugin checks for changes (in seconds). Lower numbers feel snappier; higher numbers use less network. Mobile only syncs when you open the app — this setting doesn't apply there. Min ${SYNC_INTERVAL_MIN_SECONDS}, max ${SYNC_INTERVAL_MAX_SECONDS}.`,
 			)
 			.addSlider((slider) =>
 				slider
@@ -105,19 +225,44 @@ function authDescription(
 	tokens: { access_expires_at: number } | null,
 ): string {
 	if (tokens === null) {
-		return "Not signed in. Sign-in opens your default browser for the ZITADEL device flow; tokens are stored only in plugin data, never in the vault.";
+		return "Connect this vault to your Huma account. Sign-in opens your browser to confirm — no password is stored locally.";
 	}
 	const remainingMs = tokens.access_expires_at - Date.now();
 	if (remainingMs <= 0) {
-		return "Signed in. Access token expired — will refresh on next request.";
+		return "You're connected to Huma. Sign out to disconnect this device. Your sync state stays on disk so you can sign back in later without re-pulling everything. Access token expired — will refresh on next request.";
 	}
 	const minutes = Math.round(remainingMs / 60_000);
-	return `Signed in. Access token expires in ~${minutes} minute${
+	return `You're connected to Huma. Sign out to disconnect this device. Your sync state stays on disk so you can sign back in later without re-pulling everything. Access token expires in ~${minutes} minute${
 		minutes === 1 ? "" : "s"
-	} (refresh-token rotation handles renewal automatically).`;
+	} (refreshes automatically).`;
 }
 
 function describeError(err: unknown): string {
 	if (err instanceof Error) return err.message;
 	return String(err);
+}
+
+// Obsidian's internal-plugin registry is not part of the public typings.
+// We touch it solely to read/toggle the core Sync plugin's enabled state.
+// Returns null if the API shape isn't what we expect — the toggle then
+// silently doesn't render rather than throwing.
+interface InternalSyncPlugin {
+	enabled: boolean;
+	enable?(): Promise<void> | void;
+	disable?(): Promise<void> | void;
+}
+
+interface InternalPluginRegistry {
+	getPluginById?(id: string): InternalSyncPlugin | undefined;
+	plugins?: Record<string, InternalSyncPlugin | undefined>;
+}
+
+function getInternalSyncPlugin(app: App): InternalSyncPlugin | null {
+	const registry = (app as unknown as { internalPlugins?: InternalPluginRegistry })
+		.internalPlugins;
+	if (!registry) return null;
+	const sync = registry.getPluginById
+		? registry.getPluginById("sync")
+		: registry.plugins?.sync;
+	return sync ?? null;
 }

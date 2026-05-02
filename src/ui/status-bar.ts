@@ -1,28 +1,65 @@
+// Status bar item for the Huma sync state. Renders a Lucide icon (the same
+// system Obsidian Sync uses) plus a compact label, color-coded per state.
+// The full descriptive text lives in aria-label and the title attribute so
+// hover and screen readers still get the long form. attachStatusBar wires
+// click-through; the plugin owns what each state's click does.
+
+import { setIcon } from "obsidian";
+
 export type StatusBarState =
 	| { kind: "blocked"; reason: string }
 	| { kind: "signed-out" }
 	| { kind: "idle"; lastSyncedAt: string | null }
 	| { kind: "syncing"; pendingActions: number }
 	| { kind: "error"; message: string }
-	| { kind: "conflict"; conflictCount: number; staleCount: number };
+	| {
+			kind: "conflict";
+			conflictCount: number;
+			staleCount: number;
+			duplicateCount: number;
+			serverDeletedCount: number;
+	  };
 
 export interface StatusBarHandle {
 	render(state: StatusBarState): void;
 	onClick(handler: (state: StatusBarState) => void): void;
 }
 
+const STATE_CLASSES = [
+	"huma-status--blocked",
+	"huma-status--signed-out",
+	"huma-status--idle",
+	"huma-status--syncing",
+	"huma-status--error",
+	"huma-status--conflict",
+] as const;
+
 export function attachStatusBar(el: HTMLElement): StatusBarHandle {
 	let current: StatusBarState = { kind: "signed-out" };
 	let clickHandler: ((state: StatusBarState) => void) | null = null;
 	el.addClass("huma-status-bar");
-	el.style.cursor = "pointer";
 	el.addEventListener("click", () => clickHandler?.(current));
 
 	return {
 		render(state: StatusBarState) {
 			current = state;
-			el.setText(formatStatusText(state));
-			el.setAttr("aria-label", formatStatusAria(state));
+			el.empty();
+			for (const cls of STATE_CLASSES) el.removeClass(cls);
+			el.addClass(`huma-status--${state.kind}`);
+
+			el.createSpan({ cls: "huma-status-prefix", text: "Huma" });
+
+			const iconEl = el.createSpan({ cls: "huma-status-icon" });
+			setIcon(iconEl, iconForState(state));
+
+			const label = shortLabelFor(state);
+			if (label.length > 0) {
+				el.createSpan({ cls: "huma-status-label", text: label });
+			}
+
+			const aria = formatStatusAria(state);
+			el.setAttr("aria-label", aria);
+			el.setAttr("title", aria);
 		},
 		onClick(handler) {
 			clickHandler = handler;
@@ -30,26 +67,43 @@ export function attachStatusBar(el: HTMLElement): StatusBarHandle {
 	};
 }
 
-export function formatStatusText(state: StatusBarState): string {
+export function iconForState(state: StatusBarState): string {
 	switch (state.kind) {
-		case "blocked":
-			return "Huma: ⛔ blocked";
 		case "signed-out":
-			return "Huma: signed out";
+			return "log-in";
 		case "idle":
-			return state.lastSyncedAt
-				? `Huma: ✓ ${formatRelative(state.lastSyncedAt)}`
-				: "Huma: ✓ idle";
+			return "check-circle";
 		case "syncing":
-			return `Huma: ⟳ syncing (${state.pendingActions})`;
+			return "refresh-cw";
 		case "error":
-			return "Huma: ● error";
+			return "alert-circle";
+		case "conflict":
+			return "alert-triangle";
+		case "blocked":
+			return "ban";
+	}
+}
+
+export function shortLabelFor(state: StatusBarState): string {
+	switch (state.kind) {
+		case "signed-out":
+			return "";
+		case "idle":
+			return state.lastSyncedAt ? formatRelative(state.lastSyncedAt) : "";
+		case "syncing":
+			return state.pendingActions > 0 ? String(state.pendingActions) : "";
+		case "error":
+			return "";
 		case "conflict": {
-			const parts: string[] = [];
-			if (state.conflictCount > 0) parts.push(`${state.conflictCount} conflict`);
-			if (state.staleCount > 0) parts.push(`${state.staleCount} stale`);
-			return `Huma: ⚠ ${parts.join(", ") || "attention"}`;
+			const total =
+				state.conflictCount +
+				state.staleCount +
+				state.duplicateCount +
+				state.serverDeletedCount;
+			return total > 0 ? String(total) : "";
 		}
+		case "blocked":
+			return "";
 	}
 }
 
@@ -61,14 +115,33 @@ export function formatStatusAria(state: StatusBarState): string {
 			return "Huma Vault Sync signed out. Click to open settings.";
 		case "idle":
 			return state.lastSyncedAt
-				? `Huma Vault Sync idle. Last synced ${state.lastSyncedAt}.`
-				: "Huma Vault Sync idle.";
+				? `Huma Vault Sync idle. Last synced ${state.lastSyncedAt}. Click to sync now.`
+				: "Huma Vault Sync idle. Click to sync now.";
 		case "syncing":
 			return `Huma Vault Sync syncing. ${state.pendingActions} actions pending.`;
 		case "error":
 			return `Huma Vault Sync error: ${state.message}. Click to view log.`;
-		case "conflict":
-			return `Huma Vault Sync has ${state.conflictCount} unresolved conflicts and ${state.staleCount} stale local deletions.`;
+		case "conflict": {
+			const parts: string[] = [];
+			if (state.conflictCount > 0) {
+				parts.push(`${state.conflictCount} unresolved conflicts`);
+			}
+			if (state.staleCount > 0) {
+				parts.push(`${state.staleCount} stale local deletions`);
+			}
+			if (state.duplicateCount > 0) {
+				parts.push(
+					`${state.duplicateCount} duplicate huma_uuid sets (sync paused for those files)`,
+				);
+			}
+			if (state.serverDeletedCount > 0) {
+				parts.push(
+					`${state.serverDeletedCount} server-deleted file(s) awaiting review`,
+				);
+			}
+			const summary = parts.length > 0 ? parts.join(", ") : "no issues";
+			return `Huma Vault Sync has ${summary}. Click to view log.`;
+		}
 	}
 }
 
