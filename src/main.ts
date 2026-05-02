@@ -30,6 +30,7 @@ import type {
 } from "./sync/reconcile";
 import type { PendingServerDelete } from "./settings";
 import { listConflictFiles } from "./sync/conflict";
+import { normalizeExcludedFolders } from "./sync/exclusion";
 import { runPullWorker } from "./sync/pull-worker";
 import { scanVaultForTokens } from "./security/vault-token-scan";
 import { pushAuditMany } from "./audit/ring";
@@ -869,6 +870,12 @@ export default class HumaVaultSyncPlugin extends Plugin {
 				this.data.settings.serverBaseUrl = trimmed;
 				await this.saveAll();
 				this.rebuildHttpClient();
+			},
+			getExcludedFolders: () => this.data.settings.excludedFolders,
+			setExcludedFolders: async (folders) => {
+				this.data.settings.excludedFolders =
+					normalizeExcludedFolders(folders);
+				await this.saveAll();
 			},
 			startSignIn: (welcomeCallbacks) => {
 				if (!this.auth) {

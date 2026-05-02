@@ -81,6 +81,12 @@ export class SyncEngine {
 	// sign-out cannot mask backfilled rows on the next session because the
 	// first cycle always full-fetches.
 	private fetchPolicyState: ManifestFetchPolicyState = initialPolicyState();
+	// In-memory set of UUIDs we've already emitted a duplicate_uuid audit
+	// for. Cleared when a UUID is no longer in the cycle's duplicates list
+	// (resolved → next time it goes duplicate, fresh audit fires). Bounded
+	// by the live duplicate count, never grows past the vault's actual
+	// duplicate-uuid surface.
+	private auditedDuplicateIds = new Set<string>();
 
 	constructor(deps: SyncEngineDeps) {
 		this.deps = deps;
@@ -298,13 +304,28 @@ export class SyncEngine {
 				}),
 			);
 
-			const duplicateAuditEntries: AuditEntry[] = duplicateUuids.map((d) => ({
-				timestamp: new Date().toISOString(),
-				event: "duplicate_uuid",
-				path: d.paths.join(", "),
-				id: d.uuid,
-				detail: `${d.paths.length} files share huma_uuid ${d.uuid}; sync skipped until resolved`,
-			}));
+			// Audit only on transition into duplicate state. Repeating the
+			// same warning every cycle would swamp the 200-entry ring with
+			// noise about a single unresolved collision. The set is reset
+			// below so a resolved-then-recurring duplicate fires fresh.
+			const currentDuplicateIds = new Set(duplicateUuids.map((d) => d.uuid));
+			const duplicateAuditEntries: AuditEntry[] = duplicateUuids
+				.filter((d) => !this.auditedDuplicateIds.has(d.uuid))
+				.map((d) => ({
+					timestamp: new Date().toISOString(),
+					event: "duplicate_uuid",
+					path: d.paths.join(", "),
+					id: d.uuid,
+					detail: `${d.paths.length} files share huma_uuid ${d.uuid}; sync skipped until resolved`,
+				}));
+			// Add new ones we just audited; drop ones no longer duplicate
+			// so a future re-collision audits again.
+			for (const d of duplicateUuids) this.auditedDuplicateIds.add(d.uuid);
+			for (const id of [...this.auditedDuplicateIds]) {
+				if (!currentDuplicateIds.has(id)) {
+					this.auditedDuplicateIds.delete(id);
+				}
+			}
 
 			// Stale-local-delete: file is in the local manifest but absent from
 			// the vault scan while still live on the server. Plugin does NOT

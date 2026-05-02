@@ -72,11 +72,15 @@ describe("runDevicePollLoop", () => {
 	});
 
 	it("backs off on slow_down by adding 5 seconds", async () => {
+		// First poll happens immediately (no leading sleep). After two
+		// consecutive slow_down outcomes the interval is bumped by 5
+		// each time, so the next two sleeps are 10s and 15s.
 		const sleeps: number[] = [];
 		let calls = 0;
 		const poll = vi.fn(async (): Promise<DevicePollOutcome> => {
 			calls++;
 			if (calls === 1) return { kind: "slow_down" };
+			if (calls === 2) return { kind: "slow_down" };
 			return { kind: "tokens", tokens };
 		});
 		await runDevicePollLoop({
@@ -88,8 +92,25 @@ describe("runDevicePollLoop", () => {
 			},
 			poll,
 		});
-		expect(sleeps[0]).toBe(5_000);
-		expect(sleeps[1]).toBe(10_000);
+		expect(sleeps).toEqual([10_000, 15_000]);
+	});
+
+	it("polls immediately on the first iteration with no leading sleep", async () => {
+		const sleeps: number[] = [];
+		const poll = vi.fn(
+			async (): Promise<DevicePollOutcome> => ({ kind: "tokens", tokens }),
+		);
+		await runDevicePollLoop({
+			sessionId: "s",
+			intervalSeconds: 5,
+			expiresInSeconds: 60,
+			sleep: async (ms: number) => {
+				sleeps.push(ms);
+			},
+			poll,
+		});
+		expect(poll).toHaveBeenCalledTimes(1);
+		expect(sleeps).toEqual([]);
 	});
 
 	it("returns denied when the user rejects", async () => {

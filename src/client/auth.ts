@@ -124,16 +124,23 @@ export type PollLoopResult =
 	| { kind: "aborted" };
 
 // Drives the device-code polling loop with slow_down backoff and absolute
-// expiry. Pulled out as a free function so it's straightforward to unit-test.
+// expiry. Polls immediately on the first iteration (so the modal closes as
+// soon as the user confirms in the browser, not after a full intervalSeconds
+// wait), then sleeps between subsequent polls. Server returns `pending` for
+// the impossible-to-confirm-yet first poll; protocol-compliant.
 export async function runDevicePollLoop(
 	h: PollLoopHandlers,
 ): Promise<PollLoopResult> {
 	let intervalSeconds = h.intervalSeconds;
 	const deadline = Date.now() + h.expiresInSeconds * 1000;
+	let firstPoll = true;
 	while (Date.now() < deadline) {
 		if (h.signal?.aborted) return { kind: "aborted" };
-		await h.sleep(intervalSeconds * 1000);
-		if (h.signal?.aborted) return { kind: "aborted" };
+		if (!firstPoll) {
+			await h.sleep(intervalSeconds * 1000);
+			if (h.signal?.aborted) return { kind: "aborted" };
+		}
+		firstPoll = false;
 		const outcome = await h.poll(h.sessionId);
 		switch (outcome.kind) {
 			case "tokens":

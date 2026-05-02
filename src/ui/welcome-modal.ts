@@ -1,7 +1,8 @@
 // First-run welcome modal that auto-opens once on plugin enable when no
-// tokens are stored and welcomeSeenAt is null. Three steps: (1) confirm or
-// edit the server URL behind an Advanced disclosure, (2) Sign in (delegates
-// to SignInModal), (3) report the first-sync result. Step 3 sets
+// tokens are stored and welcomeSeenAt is null. Four steps: (1) confirm or
+// edit the server URL behind an Advanced disclosure, (2) optionally list
+// excluded folders so private/secret notes stay off the server, (3) Sign in
+// (delegates to SignInModal), (4) report the first-sync result. Step 4 sets
 // welcomeSeenAt so the modal does not reappear on subsequent enables.
 
 import { App, Modal, Notice, Setting } from "obsidian";
@@ -16,6 +17,8 @@ export interface WelcomeSignInCallbacks {
 export interface WelcomeModalDeps {
 	getServerUrl: () => string;
 	setServerUrl: (url: string) => Promise<void>;
+	getExcludedFolders: () => readonly string[];
+	setExcludedFolders: (folders: string[]) => Promise<void>;
 	// Plugin opens SignInModal with its own auth wiring + the welcome
 	// modal's callbacks for step transitions. Plugin's onSuccess persists
 	// tokens via finishSignIn before invoking welcome's onSuccess.
@@ -24,7 +27,7 @@ export interface WelcomeModalDeps {
 	markWelcomeSeen: () => Promise<void>;
 }
 
-type WelcomeStep = 1 | 2 | 3 | "syncing";
+type WelcomeStep = 1 | 2 | 3 | 4 | "syncing";
 
 export class WelcomeModal extends Modal {
 	private readonly deps: WelcomeModalDeps;
@@ -56,11 +59,14 @@ export class WelcomeModal extends Modal {
 			case 2:
 				this.renderStep2(contentEl);
 				return;
+			case 3:
+				this.renderStep3(contentEl);
+				return;
 			case "syncing":
 				this.renderSyncing(contentEl);
 				return;
-			case 3:
-				this.renderStep3(contentEl);
+			case 4:
+				this.renderStep4(contentEl);
 				return;
 		}
 	}
@@ -117,6 +123,46 @@ export class WelcomeModal extends Modal {
 	}
 
 	private renderStep2(contentEl: HTMLElement): void {
+		contentEl.createEl("h2", { text: "Folders to skip" });
+		contentEl.createEl("p", {
+			cls: "huma-welcome-tip",
+			// eslint-disable-next-line obsidianmd/ui/sentence-case -- "Huma" is the product name
+			text: "Files inside these folders won't sync to Huma. Use this for private notes or scratch areas. One folder per line. Most users leave this empty — you can always change it later in settings.",
+		});
+
+		const setting = new Setting(contentEl)
+			.setName("Excluded folders")
+			.addTextArea((area) => {
+				// eslint-disable-next-line obsidianmd/ui/sentence-case -- folder-path examples, not UI prose
+				area.setPlaceholder("private\nsecrets\ndrafts");
+				area.setValue(this.deps.getExcludedFolders().join("\n"));
+				area.inputEl.rows = 4;
+				area.inputEl.addClass("huma-excluded-folders");
+				area.onChange(async (value) => {
+					const folders = value
+						.split("\n")
+						.map((f) => f.trim())
+						.filter((f) => f.length > 0);
+					await this.deps.setExcludedFolders(folders);
+				});
+			});
+		// Ensure the textarea spans the modal width like the settings tab.
+		setting.settingEl.addClass("huma-welcome-exclusions-setting");
+
+		const footer = contentEl.createDiv({ cls: "huma-welcome-footer" });
+		const skip = footer.createEl("button", { text: "Skip for now" });
+		skip.addEventListener("click", () => this.handleSkip());
+		const cont = footer.createEl("button", {
+			text: "Continue",
+			cls: "mod-cta",
+		});
+		cont.addEventListener("click", () => {
+			this.step = 3;
+			this.render();
+		});
+	}
+
+	private renderStep3(contentEl: HTMLElement): void {
 		contentEl.createEl("h2", { text: "Sign in" });
 		contentEl.createEl("p", {
 			cls: "huma-welcome-tip",
@@ -149,7 +195,7 @@ export class WelcomeModal extends Modal {
 		});
 	}
 
-	private renderStep3(contentEl: HTMLElement): void {
+	private renderStep4(contentEl: HTMLElement): void {
 		contentEl.createEl("h2", { text: "You're connected" });
 		const message = this.firstSyncMessage();
 		contentEl.createEl("p", {
@@ -208,12 +254,12 @@ export class WelcomeModal extends Modal {
 		this.deps.startSignIn({
 			onSuccess: async () => {
 				// Plugin's onSuccess already persisted tokens + started
-				// polling via finishSignIn. We continue to step 3 with
+				// polling via finishSignIn. We continue to step 4 with
 				// the first-sync result.
 				await this.runFirstSyncAndAdvance();
 			},
 			onCancel: () => {
-				// User cancelled sign-in — bring them back to step 2.
+				// User cancelled sign-in — bring them back to step 3.
 				this.render();
 			},
 			onError: (err) => {
@@ -232,13 +278,13 @@ export class WelcomeModal extends Modal {
 		} catch (err) {
 			this.lastError = err instanceof Error ? err.message : String(err);
 		}
-		this.step = 3;
+		this.step = 4;
 		this.render();
 	}
 
 	private handleSkip(): void {
 		// Skip does NOT mark welcomeSeenAt — the modal will reopen on next
-		// enable until the user completes step 3 or signs in independently
+		// enable until the user completes step 4 or signs in independently
 		// via the standalone command.
 		this.settled = true;
 		this.close();

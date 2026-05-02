@@ -4,6 +4,22 @@ All notable changes to **Huma Vault Sync** will be documented here. The format f
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-05-02
+
+### Added
+
+- Welcome modal gains a fourth step for **Excluded folders** between Server URL and Sign in. Lets a user carve out private/secret folders before the initial scan tries to sync them. One folder per line, prefix-match, persisted via the existing `excludedFolders` setting (so changing it later in the settings tab works the same way).
+
+### Changed
+
+- Sign-in modal now polls the server **immediately** on the first iteration instead of waiting up to `intervalSeconds` (default 5 s). The modal closes within a fraction of a second after the user confirms in the browser. Previously the close lag was up to one poll-interval. Subsequent polls still respect the server-provided interval (with `slow_down` backoff intact).
+
+### Fixed
+
+- `duplicate_uuid` audit entries are no longer emitted on every cycle while a duplicate is unresolved. The engine now tracks already-audited UUIDs in memory and only re-audits when a UUID transitions back into duplicate state. Drops repeated identical entries that were swamping the 200-entry audit ring.
+
+## [0.1.0] — 2026-04-30 (initial release expanded 2026-05-02)
+
 ### Added
 
 - **Reconcile rewritten as single `decide(server, local, scan)` function backed by exhaustive matrix property tests.** The three-pass partition structure collapsed into a pure per-UUID decision function plus a UUID-union dispatch loop. Server-side rename detection lives entirely in dispatch (rebinds `effectiveScan` and `effectiveLocal` to `server.path` so `decide()` sees pathsAlign-true and produces same-cycle pull/push naturally). 379 → 279 LOC, all 10 public type exports byte-identical. The `decide()` property fixture in `tests/sync/reconcile.test.ts` enumerates every `docs/CONFLICT-MATRIX.md` cell — 8 master rows + 8 sub-matrix #6 boolean combinations + 5 critical preserved behaviors (duplicate-uuid refusal × 2, synthetic-server-entry × 2, Pass-2 protection). Verify-by-deletion procedure documents Guard A (synthetic-entry promotion) and Guard B (duplicate-uuid skip) as load-bearing. CONFLICT-MATRIX.md Verification matrix is now derivable from the property fixture; all 7 pre-refactor `reconcile.ts:NNN` line-number citations replaced with symbol-name citations.
