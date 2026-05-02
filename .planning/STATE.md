@@ -34,6 +34,7 @@ See `CHANGELOG.md` `[Unreleased]` and `docs/CONFLICT-MATRIX.md`.
 - 2026-05-01: Project bootstrapped from existing brownfield codebase. ROADMAP scaffolded so phases can be added.
 - 2026-05-01: Phase 1 added — Refactor reconcile to single decide() function backed by exhaustive matrix property tests.
 - 2026-05-02: Phase 1 complete + verified (UAT 7/7 pass). Session extended into observability + resolution UX work (not in original phase scope) — see Pending Todos for follow-ups that warrant their own phases.
+- 2026-05-02: Phase 2 added — Onboarding and packaging for non-technical users. Triggered by upcoming user-onboarding tomorrow. Closes four gaps: silent first enable, the 10s sign-in Notice, orphaned tokens on disable, and missing registry/BRAT visual. 4 plans: token cleanup on disable, sign-in modal, first-run welcome modal, settings polish + default URL + README icon.
 
 ### Pending Todos
 

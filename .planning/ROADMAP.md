@@ -17,6 +17,7 @@ Pre-release v0.1 plugin shipping bidirectional sync. Recent work has closed delt
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1     | 2/2            | ✅ done — UAT 7/7 pass | 2026-05-02 |
+| 2     | 4/4            | 🔧 implementation done — UAT pending | 2026-05-02 |
 
 ### Phase 1: Refactor reconcile to single decide() function backed by exhaustive matrix property tests
 
@@ -39,3 +40,28 @@ Pre-release v0.1 plugin shipping bidirectional sync. Recent work has closed delt
 Plans:
 - [x] 01-01-PLAN.md — Refactor reconcile.ts to decide() + UUID-union dispatch backed by property-fixture covering every CONFLICT-MATRIX cell
 - [x] 01-02-PLAN.md — Update CONFLICT-MATRIX.md Verification matrix to cite the property fixture; copy build artifacts to dev install (with human-verify checkpoint)
+
+### Phase 2: Onboarding and packaging for non-technical users
+
+**Goal:** Make the plugin installable and usable end-to-end by a non-technical user. Eliminate friction at three stages: first enable (silent today), sign-in (10 s Notice that's easy to miss), and disable (orphaned OAuth tokens in `data.json`). Also: ship the registry/BRAT visual asset so the listing page isn't text-only.
+
+**Why:** First real users land tomorrow. Today the plugin enables silently, the device-flow code can scroll off-screen before the user sees it, disabling leaves tokens at rest, and the BRAT listing has no visual anchor. Each is a discrete defect against "semi-non-technical install".
+
+**Requirements:** see `.planning/phases/02-onboarding-and-packaging-for-non-technical-users/BRIEF.md`
+**Depends on:** Phase 1 (decide() + resolution UIs already shipped — Phase 2 builds on top of the existing modal infrastructure)
+**Success Criteria** (what must be TRUE):
+  1. Disabling the plugin via Settings → Community plugins → toggle off clears `data.tokens` from `data.json`. Other state (`manifest`, `auditRing`, `lastSince`, `pendingServerDeletes`, `ignoredStaleIds`) is preserved so re-enable resumes without a full re-pull.
+  2. Enabling the plugin in a fresh-install state (`data.tokens === null` and welcome-seen flag absent) auto-opens a welcome modal that walks the user through Sign in → first sync. The flag persists so it does not re-open on subsequent enables.
+  3. Sign-in modal stays open during device-flow polling, displays the user code prominently with Copy and Open Browser buttons, and shows poll progress + error states. Replaces the current 10 s Notice. Reused by both the welcome modal and the standalone Sign in command.
+  4. Settings tab fields are reordered by access frequency: Authentication → Sync now → Server URL → Sync interval → Excluded folders → Sync log. Each setting has a one-line, plain-language description targeted at a non-engineer.
+  5. Default `serverBaseUrl` in `DEFAULT_SETTINGS` changes to `https://humagreenfield.netlify.app`. Existing users with a stored value keep it via `mergeData` precedence (no migration; no users today).
+  6. `assets/icon.png` exists at the repo root, copied from `huma-webicon.png`, referenced in the README header for BRAT and community-registry visibility. NOT referenced anywhere in `src/` (no settings UI, no ribbon icon, no modal headers).
+  7. Build + lint + tests all green; no test regressions.
+
+**Plans:** 4 plans
+
+Plans:
+- [x] 02-01-PLAN.md — Token cleanup on plugin disable (clear `data.tokens` in `onunload`, preserve everything else)
+- [x] 02-02-PLAN.md — Sign-in modal replacing the device-flow Notice (used by welcome modal and standalone command)
+- [x] 02-03-PLAN.md — First-run welcome modal (auto-opens on enable when no tokens + no welcome-seen flag)
+- [x] 02-04-PLAN.md — Settings reorder + inline help, default server URL change, README icon
