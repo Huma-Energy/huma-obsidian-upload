@@ -30,6 +30,12 @@ export interface HumaPluginData {
 	// survives session restart. Cleared when the user picks Delete /
 	// Keep, or auto-cleared if the file no longer exists in the vault.
 	pendingServerDeletes: PendingServerDelete[];
+	// Timestamp of when the user completed the first-run welcome flow.
+	// `null` means not yet seen. Persisted across reloads so the welcome
+	// modal does not re-open on subsequent enables. Sign-out does NOT
+	// clear this (returning users don't re-onboard); resetLocalState
+	// DOES clear it (full reset means re-onboard); disable preserves it.
+	welcomeSeenAt: string | null;
 }
 
 export interface PendingServerDelete {
@@ -67,7 +73,7 @@ export interface ManifestRecord {
 }
 
 export const DEFAULT_SETTINGS: HumaSettings = {
-	serverBaseUrl: "https://huma.energy",
+	serverBaseUrl: "https://humagreenfield.netlify.app",
 	syncIntervalSeconds: 30,
 	excludedFolders: [],
 };
@@ -83,4 +89,5 @@ export const DEFAULT_PLUGIN_DATA: HumaPluginData = {
 	lastSince: null,
 	ignoredStaleIds: [],
 	pendingServerDeletes: [],
+	welcomeSeenAt: null,
 };
