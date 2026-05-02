@@ -88,6 +88,11 @@ export default class HumaVaultSyncPlugin extends Plugin {
 					}
 				} else if (state.kind === "error") {
 					this.openAuditLog();
+				} else if (state.kind === "idle") {
+					// No warnings outstanding — clicking the bar triggers
+					// a manual sync. Equivalent to the command-palette
+					// "Sync now" action and the ribbon icon.
+					void this.runFullSync();
 				} else {
 					new Notice(
 						"Huma: open the plugin settings to manage sync.",

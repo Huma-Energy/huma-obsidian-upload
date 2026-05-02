@@ -37,10 +37,45 @@ export class HumaSettingsTab extends PluginSettingTab {
 			);
 
 		this.renderAuthSection(containerEl);
+		this.renderSyncActionSection(containerEl);
 		this.renderSyncIntervalSection(containerEl);
 		this.renderExclusionsSection(containerEl);
 		this.renderObsidianSyncSection(containerEl);
 		this.renderSyncLogSection(containerEl);
+	}
+
+	private renderSyncActionSection(containerEl: HTMLElement): void {
+		// Disabled when not signed in — sync requires tokens. The sync
+		// interval setting below configures cadence; this button forces
+		// an immediate cycle (same code path as the command palette
+		// "Sync now" command and the ribbon icon).
+		const signedIn = this.plugin.data.tokens !== null;
+		new Setting(containerEl)
+			.setName("Sync now")
+			.setDesc(
+				"Run a full sync cycle immediately. Equivalent to the command-palette sync action and the ribbon icon.",
+			)
+			.addButton((btn) => {
+				btn.setButtonText("Sync now").setCta();
+				if (!signedIn) {
+					btn.setDisabled(true);
+				}
+				btn.onClick(async () => {
+					btn.setDisabled(true);
+					btn.setButtonText("Syncing…");
+					try {
+						await this.plugin.runFullSync();
+					} catch (err) {
+						new Notice(
+							`Huma sync failed: ${describeError(err)}`,
+							6000,
+						);
+					} finally {
+						btn.setButtonText("Sync now");
+						btn.setDisabled(!signedIn);
+					}
+				});
+			});
 	}
 
 	private renderObsidianSyncSection(containerEl: HTMLElement): void {
