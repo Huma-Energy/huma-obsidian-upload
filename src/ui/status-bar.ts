@@ -17,6 +17,7 @@ export type StatusBarState =
 			conflictCount: number;
 			staleCount: number;
 			duplicateCount: number;
+			serverDeletedCount: number;
 	  };
 
 export interface StatusBarHandle {
@@ -95,7 +96,10 @@ export function shortLabelFor(state: StatusBarState): string {
 			return "";
 		case "conflict": {
 			const total =
-				state.conflictCount + state.staleCount + state.duplicateCount;
+				state.conflictCount +
+				state.staleCount +
+				state.duplicateCount +
+				state.serverDeletedCount;
 			return total > 0 ? String(total) : "";
 		}
 		case "blocked":
@@ -128,6 +132,11 @@ export function formatStatusAria(state: StatusBarState): string {
 			if (state.duplicateCount > 0) {
 				parts.push(
 					`${state.duplicateCount} duplicate huma_uuid sets (sync paused for those files)`,
+				);
+			}
+			if (state.serverDeletedCount > 0) {
+				parts.push(
+					`${state.serverDeletedCount} server-deleted file(s) awaiting review`,
 				);
 			}
 			const summary = parts.length > 0 ? parts.join(", ") : "no issues";

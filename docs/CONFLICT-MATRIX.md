@@ -1,6 +1,6 @@
 # Conflict matrix
 
-Every local-vs-server divergence the plugin can encounter, the action it emits, and the worker that executes it. Cross-referenced to source line numbers — keep this doc in sync when reconcile changes.
+Every local-vs-server divergence the plugin can encounter, the action it emits, and the worker that executes it. Cross-referenced to source symbols (decide branches, dispatch loop steps) — keep this doc in sync when reconcile changes.
 
 ## State model
 
@@ -24,14 +24,14 @@ The 8 presence permutations of (server × local manifest × scan-by-UUID).
 
 | # | Server | Local manifest | Scan-by-UUID | Action | Cite |
 |---|---|---|---|---|---|
-| 1 | absent | absent | present, **no UUID** | `add` (push with id=null) | `reconcile.ts:226` |
-| 2 | absent | absent | present, **has UUID** | `push` (id=null; server mints or recognises) | `reconcile.ts:209-223` |
-| 3 | live | absent | absent | `pull` (first-time pull) | `reconcile.ts:142-149` |
-| 4 | live | absent | present | `pull` (recover from wiped `data.json`) | `reconcile.ts:160-168` |
-| 5 | live | present | absent | `stale-local-delete` (surfaced in status bar; no auto-action — delete sync is v1.1) | `reconcile.ts:135-140` |
-| 6 | live | present | present | sub-matrix below | — |
-| 7 | tombstoned | absent | absent | no-op | — |
-| 8 | tombstoned | present **or** scan present | — | `server-deleted` (drop manifest row, leave vault file alone) | `reconcile.ts:117-128` |
+| 1 | absent | absent | present, **no UUID** | `add` (push with id=null) | `reconcile.ts` Step E — no-UUID adds loop |
+| 2 | absent | absent | present, **has UUID** | `push` (id=null; server mints or recognises) | `reconcile.ts decide()` — server-absent, scan-with-UUID, local-absent branch |
+| 3 | live | absent | absent | `pull` (first-time pull) | `reconcile.ts decide()` — server-live, scan-absent, local-absent branch |
+| 4 | live | absent | present | `pull` (recover from wiped `data.json`) | `reconcile.ts decide()` — sub-matrix #6 cascade with `local === null` |
+| 5 | live | present | absent | `stale-local-delete` (surfaced in status bar; no auto-action — delete sync is v1.1) | `reconcile.ts decide()` — server-live, scan-absent, local-present branch |
+| 6 | live | present | present | sub-matrix below | `reconcile.ts decide()` — sub-matrix #6 cascade |
+| 7 | tombstoned | absent | absent | no-op | `reconcile.ts decide()` — server-tombstone, no-side-state branch |
+| 8 | tombstoned | present **or** scan present | — | `server-deleted` (drop manifest row, leave vault file alone) | `reconcile.ts decide()` — server-tombstone branch |
 
 ## Sub-matrix #6 — server live, local present, scan match-by-UUID
 
@@ -52,7 +52,7 @@ Within row #6 the action depends on three boolean conditions:
 | ✗ | ✓ | – | – | `rename-local`, then pull/push as needed | server-side rename detected (commit `0685a8b`) |
 | ✗ | ✗ | – | – | `push` at `scan.path` with `previousPath = local.path` | rare three-way mismatch. `serverRenamed` requires `scanned.path === local.path`, so this case bypasses rename-local entirely; client-side rename wins, server's competing rename is lost. Lossy by design — see § "Out of scope" |
 
-`rename-local` is ordered **before** pulls and pushes (`reconcile.ts:234-242`), so any same-cycle pull or push uses `server.path` as the logical path and lands at the post-rename file. The engine moves the local file via `app.fileManager.renameFile` (`rename-local.ts:18`), which also updates internal links across the vault.
+Server-side rename detection lives in `reconcile.ts` dispatch loop (Step D — server-side rename branch). When `server.path !== local.path && scan.path === local.path`, dispatch emits `rename-local` directly and synthesizes `effectiveScan = { ...scan, path: server.path }` plus `effectiveLocal = { ...local, path: server.path }` so `decide()` produces any same-cycle pull/push at the post-rename path naturally. `rename-local` is bucketed **before** pulls and pushes in the final action assembly (`reconcile.ts` Step D — action ordering invariant). The engine moves the local file via `app.fileManager.renameFile` (`rename-local.ts` action handler), which also updates internal links across the vault.
 
 ## Action handlers
 
@@ -90,11 +90,14 @@ Within row #6 the action depends on three boolean conditions:
 
 - Drops the local manifest row at end-of-cycle.
 - Vault file is left alone — the user chooses whether to delete locally.
-- Audit: `server_deleted` event per dropped row, with the row's last-known path.
+- Audit: `server_deleted` event per dropped row (severity `warning`), with the row's last-known path.
+- Resolution UI: the **Resolve server-deleted files** modal (`src/ui/server-deleted-resolution-modal.ts`) lists pending entries and exposes per-row **Delete locally** (system trash via `fileManager.trashFile`, respects the user's deletion preference) or **Keep locally** (strips `huma_uuid` from frontmatter via `processFrontMatter`, leaving an untracked local copy). Pending entries are persisted in `data.pendingServerDeletes` so the surface survives a session reload; the engine's reconcile re-emits the action every cycle the tombstone is in the `since`-window, deduped by id. Auto-cleared if the file no longer exists in the vault. The modal opens from the status bar when only server-deleted entries are outstanding, or by clicking a `server_deleted` row in the audit log. **Un-archive caveat:** the server's `lastSince`-filtered manifest does not surface un-archive events (`documents.archived_at = NULL` doesn't bump `vault_files.updated_at`); after either Delete or Keep, an admin un-archiving the file requires a manual re-pull (Delete) or yields a true zombie (Keep + edit re-pushes under a fresh UUID, original entry stays disconnected). Server-side fix: bump `updated_at` on un-archive.
 
 ### `stale-local-delete`
 
 - Counted into `stats.staleLocalDelete` and surfaced via the status bar's `conflict` state with `staleCount`.
+- Audit: `stale_local_delete` event per action, severity `warning`, with the missing file's last-known path and serverId so the user can trace which file produced the status-bar count.
+- Resolution UI: the **Resolve stale deletions** modal (`src/ui/stale-resolution-modal.ts`) lists outstanding stale entries and exposes a per-row **Restore** action. Restore drops the local manifest row and triggers a sync — the next reconcile sees `(server live, local absent, scan absent)` (master row #3) and pulls the file back at the server's current path. The modal opens automatically when the user clicks the status bar in `conflict` state with `staleCount > 0` and no `.conflict.md` files outstanding; it can also be opened by clicking a `stale_local_delete` row in the audit log. Confirming a deletion (instead of restoring) requires deleting the file in the Huma web app — the plugin will pick up the tombstone on the next sync (master row #8 → `server-deleted` → manifest row drops). Direct local-delete-to-server propagation is the v1.1 delete-sync work.
 - No automatic server-side action. Per plan, delete-sync is deferred to v1.1.
 
 ## Conflict-file emission — `conflict.ts:30`
@@ -140,7 +143,7 @@ Triggered by server's `merge_dirty` response.
 | Mid-cycle plugin crash | manifest persisted incrementally (push every 25, pull per batch). Next start picks up from last persisted state | As designed |
 | Server returns path with backslashes / leading slashes / non-NFC unicode | `normalizePath` cleans; the cleaned path is used everywhere thereafter | As designed |
 | File with `huma_uuid` set but UUID unknown to server (stale frontmatter) | pass-2 emits push with id=null; server allocates new UUID and overwrites the frontmatter | As designed |
-| Locally-synced file with `huma_uuid` known to local manifest but absent from a delta server manifest (`?since=lastSince` window misses unchanged files) | reconcile synthesises a server manifest entry for every locally-tracked UUID delta omitted (using the local manifest's last-known state), then routes through Pass 1 normally. In-sync files no-op; locally-edited or renamed files emit push; locally-deleted files emit stale-local-delete. Pass 2 only handles true first-push (id=null) cases | As designed (regression tests in `tests/sync/reconcile.test.ts`: "delta hides server entry, file edited locally → pushes via synthetic server entry", "delta hides server entry, file deleted locally → emits stale-local-delete") |
+| Locally-synced file with `huma_uuid` known to local manifest but absent from a delta server manifest (`?since=lastSince` window misses unchanged files) | reconcile synthesises a server manifest entry for every locally-tracked UUID delta omitted (using the local manifest's last-known state — Step C: synthetic-entry promotion), then dispatches `decide()` over the UUID union. In-sync files no-op; locally-edited or renamed files emit push; locally-deleted files emit stale-local-delete. The `server: null + scan-with-UUID + local: null` branch in `decide()` handles only true first-push (id=null) cases | As designed (regression tests in `tests/sync/reconcile.test.ts`: "delta hides server entry, file edited locally → pushes via synthetic server entry", "delta hides server entry, file deleted locally → emits stale-local-delete", plus the property-fixture rows "synthetic-server-entry: pushes with serverId and previousPath when delta hides server row but scan diverges" and "synthetic-server-entry: emits stale-local-delete when delta hides row and scan is absent") |
 | Server has rows whose `updated_at` is older than the persisted `lastSince` (e.g. backfilled web docs the user has never pulled, post-sign-out where manifest is preserved) | Engine cold-starts every plugin load with a full fetch and re-baselines every `FULL_FETCH_EVERY` cycles. Standard delta-sync recovery practice (RFC 6578, MS Graph deltas, CloudKit, Drive Changes API) | As designed (policy unit-tested in `tests/sync/manifest-fetch-policy.test.ts`) |
 | Two local files share the same `huma_uuid` (corrupted import) | reconcile refuses to push, pull, or rename for the duplicate UUID. Engine emits `duplicate_uuid` audit and the status bar shows a `conflict` state until the user removes the duplicate frontmatter from one of the files | As designed |
 | Server returns 401 mid-sync | TokenManager refreshes once; on refresh failure the cycle errors and the status bar shows `error` with `classifyErrorForUser` | As designed |
@@ -161,39 +164,60 @@ Triggered by server's `merge_dirty` response.
 
 ## Verification matrix
 
-For each row in the master matrix and the sub-matrix, the test that covers it (or "manual" if untested):
+This table is derivable from the `describe("decide() property matrix", ...)` block in `tests/sync/reconcile.test.ts`. Each master-matrix row, each sub-matrix #6 boolean combination, and each critical preserved behavior cites its exact `it(...)` name. When you add a row to the master/sub-matrix tables above, add the corresponding fixture row first.
+
+### Master matrix coverage
 
 | Scenario | Test |
 |---|---|
-| #1 add (new local, no UUID) | `tests/sync/reconcile.test.ts` "emits an add for a scanned file with no huma_uuid" |
-| #2 push id=null (UUID frontmatter, server-unknown) | `tests/sync/reconcile.test.ts` "master row #2: pushes with id=null when scan has a UUID neither side knows" |
-| #3 pull (first-time) | `tests/sync/reconcile.test.ts` "master row #3: pulls first-time when server has a row neither local manifest nor scan has" |
-| #4 pull (recover from wiped data.json) | `tests/sync/reconcile.test.ts` "master row #4: pulls to recover when data.json was wiped" |
-| #5 stale-local-delete | `tests/sync/reconcile.test.ts` "emits a stale-local-delete when the file vanished locally" |
-| #6 various | see sub-matrix below |
-| #7 no-op | `tests/sync/reconcile.test.ts` "master row #7 (no-op): emits no actions when server, local, and scan all agree" |
-| #8 server-deleted | `tests/sync/reconcile.test.ts` "emits server-deleted for tombstoned server entries" |
-| #6 clean pull | `tests/sync/reconcile.test.ts` "emits a pull when the server has a newer version and locally unchanged" |
-| #6 clean push | `tests/sync/reconcile.test.ts` "emits a push when the local file diverges from the manifest" |
-| #6 divergent push | `tests/sync/reconcile.test.ts` "emits a push and counts a conflict when both sides diverged" |
-| #6 plugin-side rename | `tests/sync/reconcile.test.ts` "emits a push with previous_path when the local file was renamed" |
-| #6 server-side rename only | `tests/sync/reconcile.test.ts` "emits rename-local when server moved a file the user did not" |
-| #6 server-side rename + version bump | `tests/sync/reconcile.test.ts` "rename-local plus pull when server renamed and bumped version" |
-| #6 server-rename, no double-push | `tests/sync/reconcile.test.ts` "does not emit plugin-side push-rename when scan path matches local" |
-| #6 plugin-side rename + local edit | `tests/sync/reconcile.test.ts` "sub-matrix ✓ ✗ – ✓: emits a single push with previousPath for plugin-side rename + local edit" |
-| #6 three-way path mismatch (lossy) | `tests/sync/reconcile.test.ts` "sub-matrix ✗ ✗ – –: concurrent rename-rename to different paths" |
+| master row #1 — add (scan-only, no UUID) | `tests/sync/reconcile.test.ts › decide() property matrix › "master row #1: emits add for scan-only file with no UUID"` |
+| master row #2 — push id=null (UUID neither side knows) | `tests/sync/reconcile.test.ts › decide() property matrix › "master row #2: pushes with serverId=null when scan has UUID and neither server nor local know it"` |
+| master row #3 — first-time pull | `tests/sync/reconcile.test.ts › decide() property matrix › "master row #3: emits first-time pull when server has a row neither local nor scan know"` |
+| master row #4 — pull-recover from wiped data.json | `tests/sync/reconcile.test.ts › decide() property matrix › "master row #4: emits pull when local manifest is wiped but vault file still exists"` |
+| master row #5 — stale-local-delete | `tests/sync/reconcile.test.ts › decide() property matrix › "master row #5: emits stale-local-delete when local manifest tracks a file that vanished from disk"` |
+| master row #6 — sub-matrix delegation (in-sync no-op marker) | `tests/sync/reconcile.test.ts › decide() property matrix › "master row #6: delegates to sub-matrix — in-sync no-op when all three views agree"` |
+| master row #7 — no-op (tombstoned, no local state) | `tests/sync/reconcile.test.ts › decide() property matrix › "master row #7: emits no action for tombstoned server entry the local side never tracked"` |
+| master row #8 — server-deleted | `tests/sync/reconcile.test.ts › decide() property matrix › "master row #8: emits server-deleted when server is tombstoned and the local side has anything"` |
+
+### Sub-matrix #6 coverage (boolean combinations)
+
+| Booleans (`s.path=l.path`, `scan.path=l.path`, `serverNewer`, `localEdited`) | Test |
+|---|---|
+| sub-matrix #6 ✓ ✓ ✗ ✗ — in-sync no-op | `tests/sync/reconcile.test.ts › decide() property matrix › "sub-matrix #6 ✓ ✓ ✗ ✗: emits no action when all three paths align and neither side moved"` |
+| sub-matrix #6 ✓ ✓ ✓ ✗ — clean server-update | `tests/sync/reconcile.test.ts › decide() property matrix › "sub-matrix #6 ✓ ✓ ✓ ✗: emits clean pull when server bumped version and local is unchanged"` |
+| sub-matrix #6 ✓ ✓ ✗ ✓ — clean local-edit | `tests/sync/reconcile.test.ts › decide() property matrix › "sub-matrix #6 ✓ ✓ ✗ ✓: emits clean push when only the local body diverged"` |
+| sub-matrix #6 ✓ ✓ ✓ ✓ — divergent edits | `tests/sync/reconcile.test.ts › decide() property matrix › "sub-matrix #6 ✓ ✓ ✓ ✓: emits push and increments conflict counter when both sides diverged"` |
+| sub-matrix #6 ✓ ✗ – ✗ — plugin-side rename, no edit | `tests/sync/reconcile.test.ts › decide() property matrix › "sub-matrix #6 ✓ ✗ – ✗: emits push with previousPath for plugin-side rename without body change"` |
+| sub-matrix #6 ✓ ✗ – ✓ — plugin-side rename + edit | `tests/sync/reconcile.test.ts › decide() property matrix › "sub-matrix #6 ✓ ✗ – ✓: emits one push with previousPath for plugin-side rename plus local edit"` |
+| sub-matrix #6 ✗ ✓ – – — server-side rename | `tests/sync/reconcile.test.ts › decide() property matrix › "sub-matrix #6 ✗ ✓ – –: emits rename-local plus pull when the server moved the file and bumped version"` |
+| sub-matrix #6 ✗ ✗ – – — three-way path mismatch (lossy) | `tests/sync/reconcile.test.ts › decide() property matrix › "sub-matrix #6 ✗ ✗ – –: emits a single push at scan.path when all three paths disagree (lossy by design)"` |
+
+### Critical preserved behaviors
+
+| Scenario | Test |
+|---|---|
+| Duplicate `huma_uuid` refusal (live server) | `tests/sync/reconcile.test.ts › decide() property matrix › "duplicate huma_uuid refusal: emits no actions and surfaces duplicateUuids"` |
+| Duplicate `huma_uuid` + tombstoned server (still surfaces) | `tests/sync/reconcile.test.ts › decide() property matrix › "duplicate huma_uuid plus tombstoned server: still emits server-deleted and surfaces duplicateUuids"` |
+| Synthetic-server-entry promotion — push case (Guard A) | `tests/sync/reconcile.test.ts › decide() property matrix › "synthetic-server-entry: pushes with serverId and previousPath when delta hides server row but scan diverges"` |
+| Synthetic-server-entry promotion — stale-delete case (Guard A) | `tests/sync/reconcile.test.ts › decide() property matrix › "synthetic-server-entry: emits stale-local-delete when delta hides row and scan is absent"` |
+| Pass-2 protection — no spurious push on in-sync delta-omitted UUID | `tests/sync/reconcile.test.ts › decide() property matrix › "Pass-2 protection: emits no action when local and scan agree and server delta omits the row"` |
+
+### Cross-cutting infrastructure
+
+| Scenario | Test |
+|---|---|
 | Cold-start / re-baseline manifest fetch | `tests/sync/manifest-fetch-policy.test.ts` |
-| Pass 2 skip on locally-known UUID (delta-mode protection) | `tests/sync/reconcile.test.ts` "does not re-push a locally-known file absent from a delta server manifest" |
-| Empty-body hash drift | `tests/sync/frontmatter.test.ts` "hash of parsed-back body is stable…" |
-| Excluded folder filter | `tests/sync/reconcile.test.ts` "emits no actions for server entries inside an excluded folder" |
+| Empty-body hash drift (parsed-back body invariant) | `tests/sync/frontmatter.test.ts` "hash of parsed-back body is stable…" |
+| Excluded folder filter (Step A — three-view filter) | `tests/sync/reconcile.test.ts` "emits no actions for server entries inside an excluded folder" |
 | Conflict file frontmatter scan filter | `tests/sync/scan.test.ts` "excludes *.conflict.md files from the scan" |
 | Path normalization defence | `tests/sync/conflict.test.ts` "normalizes path traversal attempts" |
 | Self-write tracker | `tests/sync/self-write-tracker.test.ts` |
 | Error classification | `tests/main-error-classifier.test.ts` |
 | Pull `not_found` drop | `tests/sync/pull-worker.test.ts` |
-| Duplicate `huma_uuid` refusal | `tests/sync/reconcile.test.ts` "refuses to act when two scanned files share a huma_uuid" |
 | Pre-sign-in heuristic token scan | `tests/security/vault-token-scan.test.ts` "surfaces heuristic matches when no stored tokens are configured (pre-sign-in)" |
 
 ## Updating this doc
 
-When you add or change an action in `reconcile.ts`, `engine.ts`, `pull-worker.ts`, `push-worker.ts`, or `conflict.ts`, update the relevant section here. Cross-references include line numbers — those rot when the source moves; treat them as approximate and search by symbol name.
+When you add or change an action in `reconcile.ts`, `engine.ts`, `pull-worker.ts`, `push-worker.ts`, or `conflict.ts`, update the relevant section here. Cross-references cite source symbols (decide branches, dispatch loop steps) rather than line numbers, since line numbers rot when the source moves.
+
+Since the Step A–E refactor (Phase 1), the reconcile decision logic is concentrated in `decide()` and a UUID-union dispatch in `reconcile()`. The Verification matrix above is derivable from the `describe("decide() property matrix", ...)` block in `tests/sync/reconcile.test.ts` — when adding a row to the matrix, add the corresponding fixture row first.

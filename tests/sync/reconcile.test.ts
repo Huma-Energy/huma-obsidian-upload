@@ -551,3 +551,649 @@ describe("reconcile", () => {
 		expect(kinds).toEqual(["rename-local"]);
 	});
 });
+
+// Property fixture mirroring docs/CONFLICT-MATRIX.md. Each row is labelled
+// with its master-matrix # or sub-matrix coordinates so a maintainer can
+// grep from the doc to a failing test in one hop. The post-refactor
+// dispatch in src/sync/reconcile.ts (Step A–E) is the unit under test;
+// these rows pass against both the pre- and post-refactor implementations
+// because they assert externally observable reconcile() output.
+describe("decide() property matrix", () => {
+	it("master row #1: emits add for scan-only file with no UUID", () => {
+		// server absent, local absent, scan present (no UUID).
+		const out = reconcile({
+			serverManifest: [],
+			localManifest: [],
+			scanned: [scanned({ uuid: null, path: "fresh.md" })],
+		});
+		expect(out.actions).toEqual([
+			{ kind: "add", id: "add:fresh.md", path: "fresh.md" },
+		]);
+		expect(out.stats).toMatchObject({ add: 1, pull: 0, push: 0 });
+	});
+
+	it("master row #2: pushes with serverId=null when scan has UUID and neither server nor local know it", () => {
+		// server absent, local absent, scan present (with UUID).
+		const out = reconcile({
+			serverManifest: [],
+			localManifest: [],
+			scanned: [
+				scanned({ uuid: "uuid-m2", path: "imported.md", hash: "h-m2" }),
+			],
+		});
+		expect(out.actions).toEqual([
+			{
+				kind: "push",
+				id: "push:uuid-m2",
+				serverId: null,
+				path: "imported.md",
+				previousPath: null,
+			},
+		]);
+	});
+
+	it("master row #3: emits first-time pull when server has a row neither local nor scan know", () => {
+		// server live, local absent, scan absent.
+		const out = reconcile({
+			serverManifest: [
+				serverEntry({ id: "uuid-m3", path: "remote.md", version: 4 }),
+			],
+			localManifest: [],
+			scanned: [],
+		});
+		expect(out.actions).toEqual([
+			{
+				kind: "pull",
+				id: "pull:uuid-m3",
+				serverId: "uuid-m3",
+				path: "remote.md",
+				conflictedLocally: false,
+			},
+		]);
+	});
+
+	it("master row #4: emits pull when local manifest is wiped but vault file still exists", () => {
+		// server live, local absent, scan present (same UUID — data.json recovery).
+		const out = reconcile({
+			serverManifest: [
+				serverEntry({
+					id: "uuid-m4",
+					path: "kept.md",
+					version: 9,
+					hash: "h-server",
+				}),
+			],
+			localManifest: [],
+			scanned: [
+				scanned({ uuid: "uuid-m4", path: "kept.md", hash: "h-on-disk" }),
+			],
+		});
+		expect(out.actions).toEqual([
+			{
+				kind: "pull",
+				id: "pull:uuid-m4",
+				serverId: "uuid-m4",
+				path: "kept.md",
+				conflictedLocally: false,
+			},
+		]);
+	});
+
+	it("master row #5: emits stale-local-delete when local manifest tracks a file that vanished from disk", () => {
+		// server live, local present, scan absent.
+		const out = reconcile({
+			serverManifest: [
+				serverEntry({ id: "uuid-m5", path: "lost.md", version: 2 }),
+			],
+			localManifest: [
+				localRecord({ id: "uuid-m5", path: "lost.md", version: 2 }),
+			],
+			scanned: [],
+		});
+		expect(out.actions).toEqual([
+			{
+				kind: "stale-local-delete",
+				id: "stale-local-delete:uuid-m5",
+				serverId: "uuid-m5",
+				path: "lost.md",
+			},
+		]);
+		expect(out.stats.staleLocalDelete).toBe(1);
+	});
+
+	it("master row #6: delegates to sub-matrix — in-sync no-op when all three views agree", () => {
+		// server live, local present, scan present — representative in-sync cell.
+		// The 8 sub-matrix #6 cells below cover the full boolean cube.
+		const out = reconcile({
+			serverManifest: [
+				serverEntry({
+					id: "uuid-m6",
+					path: "calm.md",
+					version: 5,
+					hash: "h-m6",
+				}),
+			],
+			localManifest: [
+				localRecord({
+					id: "uuid-m6",
+					path: "calm.md",
+					version: 5,
+					hash: "h-m6",
+				}),
+			],
+			scanned: [
+				scanned({ uuid: "uuid-m6", path: "calm.md", hash: "h-m6" }),
+			],
+		});
+		expect(out.actions).toEqual([]);
+	});
+
+	it("master row #7: emits no action for tombstoned server entry the local side never tracked", () => {
+		// server tombstoned, local absent, scan absent.
+		const out = reconcile({
+			serverManifest: [
+				serverEntry({
+					id: "uuid-m7",
+					path: "ghost.md",
+					deleted_at: "2026-04-15T00:00:00Z",
+				}),
+			],
+			localManifest: [],
+			scanned: [],
+		});
+		expect(out.actions).toEqual([]);
+		expect(out.stats.serverDeleted).toBe(0);
+	});
+
+	it("master row #8: emits server-deleted when server is tombstoned and the local side has anything", () => {
+		// server tombstoned, local present (scan also present here for coverage).
+		const out = reconcile({
+			serverManifest: [
+				serverEntry({
+					id: "uuid-m8",
+					path: "tomb.md",
+					deleted_at: "2026-04-20T00:00:00Z",
+				}),
+			],
+			localManifest: [localRecord({ id: "uuid-m8", path: "tomb.md" })],
+			scanned: [
+				scanned({ uuid: "uuid-m8", path: "tomb.md", hash: "h-m8" }),
+			],
+		});
+		expect(out.actions).toEqual([
+			{
+				kind: "server-deleted",
+				id: "server-deleted:uuid-m8",
+				serverId: "uuid-m8",
+				path: "tomb.md",
+			},
+		]);
+		expect(out.stats.serverDeleted).toBe(1);
+	});
+
+	it("sub-matrix #6 ✓ ✓ ✗ ✗: emits no action when all three paths align and neither side moved", () => {
+		// pathsAlign-server-local=✓, pathsAlign-scan-local=✓, serverNewer=✗, localEdited=✗.
+		const out = reconcile({
+			serverManifest: [
+				serverEntry({
+					id: "id-66a",
+					path: "p66a.md",
+					version: 3,
+					hash: "h-66a",
+				}),
+			],
+			localManifest: [
+				localRecord({
+					id: "id-66a",
+					path: "p66a.md",
+					version: 3,
+					hash: "h-66a",
+				}),
+			],
+			scanned: [
+				scanned({ uuid: "id-66a", path: "p66a.md", hash: "h-66a" }),
+			],
+		});
+		expect(out.actions).toEqual([]);
+	});
+
+	it("sub-matrix #6 ✓ ✓ ✓ ✗: emits clean pull when server bumped version and local is unchanged", () => {
+		// pathsAlign-server-local=✓, pathsAlign-scan-local=✓, serverNewer=✓, localEdited=✗.
+		const out = reconcile({
+			serverManifest: [
+				serverEntry({
+					id: "id-66b",
+					path: "p66b.md",
+					version: 4,
+					hash: "h-66b-new",
+				}),
+			],
+			localManifest: [
+				localRecord({
+					id: "id-66b",
+					path: "p66b.md",
+					version: 3,
+					hash: "h-66b-old",
+				}),
+			],
+			scanned: [
+				scanned({ uuid: "id-66b", path: "p66b.md", hash: "h-66b-old" }),
+			],
+		});
+		expect(out.actions).toEqual([
+			{
+				kind: "pull",
+				id: "pull:id-66b",
+				serverId: "id-66b",
+				path: "p66b.md",
+				conflictedLocally: false,
+			},
+		]);
+		expect(out.stats.conflict).toBe(0);
+	});
+
+	it("sub-matrix #6 ✓ ✓ ✗ ✓: emits clean push when only the local body diverged", () => {
+		// pathsAlign-server-local=✓, pathsAlign-scan-local=✓, serverNewer=✗, localEdited=✓.
+		const out = reconcile({
+			serverManifest: [
+				serverEntry({
+					id: "id-66c",
+					path: "p66c.md",
+					version: 2,
+					hash: "h-66c",
+				}),
+			],
+			localManifest: [
+				localRecord({
+					id: "id-66c",
+					path: "p66c.md",
+					version: 2,
+					hash: "h-66c",
+				}),
+			],
+			scanned: [
+				scanned({
+					uuid: "id-66c",
+					path: "p66c.md",
+					hash: "h-66c-edited",
+				}),
+			],
+		});
+		expect(out.actions).toEqual([
+			{
+				kind: "push",
+				id: "push:id-66c",
+				serverId: "id-66c",
+				path: "p66c.md",
+				previousPath: null,
+			},
+		]);
+		expect(out.stats.conflict).toBe(0);
+	});
+
+	it("sub-matrix #6 ✓ ✓ ✓ ✓: emits push and increments conflict counter when both sides diverged", () => {
+		// pathsAlign-server-local=✓, pathsAlign-scan-local=✓, serverNewer=✓, localEdited=✓.
+		const out = reconcile({
+			serverManifest: [
+				serverEntry({
+					id: "id-66d",
+					path: "p66d.md",
+					version: 5,
+					hash: "h-66d-server",
+				}),
+			],
+			localManifest: [
+				localRecord({
+					id: "id-66d",
+					path: "p66d.md",
+					version: 4,
+					hash: "h-66d-orig",
+				}),
+			],
+			scanned: [
+				scanned({
+					uuid: "id-66d",
+					path: "p66d.md",
+					hash: "h-66d-local-new",
+				}),
+			],
+		});
+		expect(out.actions).toEqual([
+			{
+				kind: "push",
+				id: "push:id-66d",
+				serverId: "id-66d",
+				path: "p66d.md",
+				previousPath: null,
+			},
+		]);
+		expect(out.stats.conflict).toBe(1);
+	});
+
+	it("sub-matrix #6 ✓ ✗ – ✗: emits push with previousPath for plugin-side rename without body change", () => {
+		// pathsAlign-server-local=✓, pathsAlign-scan-local=✗, localEdited=✗.
+		// Server agrees with local on path; user moved file locally; body unchanged.
+		const out = reconcile({
+			serverManifest: [
+				serverEntry({
+					id: "id-66e",
+					path: "old66e.md",
+					version: 1,
+					hash: "h-66e",
+				}),
+			],
+			localManifest: [
+				localRecord({
+					id: "id-66e",
+					path: "old66e.md",
+					version: 1,
+					hash: "h-66e",
+				}),
+			],
+			scanned: [
+				scanned({ uuid: "id-66e", path: "new66e.md", hash: "h-66e" }),
+			],
+		});
+		expect(out.actions).toEqual([
+			{
+				kind: "push",
+				id: "push:id-66e",
+				serverId: "id-66e",
+				path: "new66e.md",
+				previousPath: "old66e.md",
+			},
+		]);
+	});
+
+	it("sub-matrix #6 ✓ ✗ – ✓: emits one push with previousPath for plugin-side rename plus local edit", () => {
+		// pathsAlign-server-local=✓, pathsAlign-scan-local=✗, localEdited=✓.
+		const out = reconcile({
+			serverManifest: [
+				serverEntry({
+					id: "id-66f",
+					path: "old66f.md",
+					version: 2,
+					hash: "h-66f-orig",
+				}),
+			],
+			localManifest: [
+				localRecord({
+					id: "id-66f",
+					path: "old66f.md",
+					version: 2,
+					hash: "h-66f-orig",
+				}),
+			],
+			scanned: [
+				scanned({
+					uuid: "id-66f",
+					path: "new66f.md",
+					hash: "h-66f-edited",
+				}),
+			],
+		});
+		expect(out.actions).toEqual([
+			{
+				kind: "push",
+				id: "push:id-66f",
+				serverId: "id-66f",
+				path: "new66f.md",
+				previousPath: "old66f.md",
+			},
+		]);
+		expect(out.stats.conflict).toBe(0);
+	});
+
+	it("sub-matrix #6 ✗ ✓ – –: emits rename-local plus pull when the server moved the file and bumped version", () => {
+		// pathsAlign-server-local=✗, pathsAlign-scan-local=✓ (scan still at local path).
+		// Dispatch detects server-side rename, emits rename-local, then decide
+		// sees the scan-shim with path=server.path and produces the pull.
+		const out = reconcile({
+			serverManifest: [
+				serverEntry({
+					id: "id-66g",
+					path: "moved66g.md",
+					version: 3,
+					hash: "h-66g-new",
+				}),
+			],
+			localManifest: [
+				localRecord({
+					id: "id-66g",
+					path: "old66g.md",
+					version: 2,
+					hash: "h-66g-old",
+				}),
+			],
+			scanned: [
+				scanned({ uuid: "id-66g", path: "old66g.md", hash: "h-66g-old" }),
+			],
+		});
+		expect(out.actions).toEqual([
+			{
+				kind: "rename-local",
+				id: "rename-local:id-66g",
+				serverId: "id-66g",
+				fromPath: "old66g.md",
+				toPath: "moved66g.md",
+			},
+			{
+				kind: "pull",
+				id: "pull:id-66g",
+				serverId: "id-66g",
+				path: "moved66g.md",
+				conflictedLocally: false,
+			},
+		]);
+		expect(out.stats.renameLocal).toBe(1);
+	});
+
+	it("sub-matrix #6 ✗ ✗ – –: emits a single push at scan.path when all three paths disagree (lossy by design)", () => {
+		// pathsAlign-server-local=✗, pathsAlign-scan-local=✗.
+		// `serverRenamed` requires scan.path === local.path so this case bypasses
+		// rename-local and falls into plugin-side rename branch. Server's
+		// competing rename is lost — see docs/CONFLICT-MATRIX.md § "Out of scope".
+		const out = reconcile({
+			serverManifest: [
+				serverEntry({
+					id: "id-66h",
+					path: "server66h.md",
+					version: 2,
+					hash: "h-66h-server",
+				}),
+			],
+			localManifest: [
+				localRecord({
+					id: "id-66h",
+					path: "local66h.md",
+					version: 1,
+					hash: "h-66h-orig",
+				}),
+			],
+			scanned: [
+				scanned({
+					uuid: "id-66h",
+					path: "scan66h.md",
+					hash: "h-66h-edited",
+				}),
+			],
+		});
+		expect(out.actions).toEqual([
+			{
+				kind: "push",
+				id: "push:id-66h",
+				serverId: "id-66h",
+				path: "scan66h.md",
+				previousPath: "local66h.md",
+			},
+		]);
+		expect(out.stats.conflict).toBe(1);
+	});
+
+	it("duplicate huma_uuid refusal: emits no actions and surfaces duplicateUuids", () => {
+		// Two scanned files share the same UUID; server has a live row.
+		// Reconcile must refuse to push/pull/rename and report the dup set.
+		const out = reconcile({
+			serverManifest: [
+				serverEntry({ id: "dup", path: "a.md", hash: "h-dup" }),
+			],
+			localManifest: [
+				localRecord({ id: "dup", path: "a.md", hash: "h-dup" }),
+			],
+			scanned: [
+				scanned({ uuid: "dup", path: "a.md", hash: "h-dup" }),
+				scanned({ uuid: "dup", path: "b.md", hash: "h-dup" }),
+			],
+		});
+		expect(out.actions).toEqual([]);
+		expect(out.stats.duplicateUuid).toBe(1);
+		expect(out.duplicateUuids).toEqual([
+			{ uuid: "dup", paths: ["a.md", "b.md"] },
+		]);
+	});
+
+	it("duplicate huma_uuid plus tombstoned server: still emits server-deleted and surfaces duplicateUuids", () => {
+		// Tombstone-drop is safe regardless of local duplication; the engine
+		// still needs the dup-uuid alert so it can surface the local corruption.
+		const out = reconcile({
+			serverManifest: [
+				serverEntry({
+					id: "dup",
+					path: "a.md",
+					deleted_at: "2026-04-22T00:00:00Z",
+				}),
+			],
+			localManifest: [localRecord({ id: "dup", path: "a.md" })],
+			scanned: [
+				scanned({ uuid: "dup", path: "a.md" }),
+				scanned({ uuid: "dup", path: "b.md" }),
+			],
+		});
+		expect(out.actions[0]?.kind).toBe("server-deleted");
+		expect(out.stats.duplicateUuid).toBe(1);
+		expect(out.duplicateUuids).toEqual([
+			{ uuid: "dup", paths: ["a.md", "b.md"] },
+		]);
+	});
+
+	it("synthetic-server-entry: pushes with serverId and previousPath when delta hides server row but scan diverges", () => {
+		// Server delta omits the row (serverManifest empty); local manifest has
+		// the UUID at "previous.md"; scan has the UUID at "current.md" with a
+		// different hash. Asserting BOTH serverId and previousPath populated is
+		// what makes Guard A (synthetic-server-entry promotion) removable
+		// detectable: without promotion, decide is invoked with server=null and
+		// emits push with serverId=null/previousPath=null instead.
+		const out = reconcile({
+			serverManifest: [],
+			localManifest: [
+				localRecord({
+					id: "uuid-syn",
+					path: "previous.md",
+					version: 1,
+					hash: "h-prev",
+				}),
+			],
+			scanned: [
+				scanned({
+					uuid: "uuid-syn",
+					path: "current.md",
+					hash: "h-current",
+				}),
+			],
+		});
+		expect(out.actions).toEqual([
+			{
+				kind: "push",
+				id: "push:uuid-syn",
+				serverId: "uuid-syn", // CRITICAL: not null — Guard A enforces this
+				path: "current.md",
+				previousPath: "previous.md", // CRITICAL: not null
+			},
+		]);
+		expect(out.stats.push).toBe(1);
+	});
+
+	it("synthetic-server-entry: emits stale-local-delete when delta hides row and scan is absent", () => {
+		// Server delta omits row; local has UUID; scan has no entry for that UUID.
+		// Synthetic entry's deleted_at=null routes through stale-local-delete.
+		const out = reconcile({
+			serverManifest: [],
+			localManifest: [
+				localRecord({
+					id: "uuid-syn-gone",
+					path: "removed.md",
+					version: 1,
+					hash: "h-removed",
+				}),
+			],
+			scanned: [],
+		});
+		expect(out.actions).toEqual([
+			{
+				kind: "stale-local-delete",
+				id: "stale-local-delete:uuid-syn-gone",
+				serverId: "uuid-syn-gone",
+				path: "removed.md",
+			},
+		]);
+		expect(out.stats.staleLocalDelete).toBe(1);
+	});
+
+	it("Pass-2 protection: emits no action when local and scan agree and server delta omits the row", () => {
+		// Documents the no-spurious-push invariant: with synthetic-entry
+		// promotion intact, decide(synthetic-server, local, scan) sees in-sync
+		// state and returns null. Complements the synthetic-entry edit row
+		// above; this row alone does not fail under Guard A removal because
+		// decide(null, local, scan) with same hash/path also returns null —
+		// Guard A's verifiable failure is via the synthetic-entry edit row.
+		const out = reconcile({
+			serverManifest: [],
+			localManifest: [
+				localRecord({
+					id: "uuid-pass2",
+					path: "stable.md",
+					version: 1,
+					hash: "h-stable",
+				}),
+			],
+			scanned: [
+				scanned({
+					uuid: "uuid-pass2",
+					path: "stable.md",
+					hash: "h-stable",
+				}),
+			],
+		});
+		expect(out.actions).toEqual([]);
+		expect(out.stats.push).toBe(0);
+	});
+
+	// Verify-by-deletion procedure (run by hand; do NOT commit either deletion).
+	// Both removals target dispatch-level guards in src/sync/reconcile.ts that
+	// exist AFTER the Step A–E refactor (Plan 01-01 Task 2). Pre-refactor symbol
+	// names like `scannedByUuid loop` no longer apply.
+	//
+	// Guard A — synthetic-server-entry promotion (Step C in dispatch).
+	//   Location: the loop `for (const local of localManifest) { if (!serverByIdEffective.has(local.id)) serverByIdEffective.set(local.id, { ...synthetic }); }`.
+	//   Removal effect: delta-omitted UUIDs reach decide() with server=null.
+	//   Expected fixture failure: "synthetic-server-entry: pushes with serverId
+	//   and previousPath when delta hides server row but scan diverges"
+	//     — actual action is push with serverId=null, previousPath=null
+	//     — assertion fails on serverId (expected "uuid-syn", received null).
+	//   Also expected to fail: "synthetic-server-entry: emits stale-local-delete
+	//   when delta hides row and scan is absent" — without promotion, dispatch's
+	//   union still includes the UUID via local, but decide(null, local, null)
+	//   returns null instead of stale-local-delete.
+	//
+	// Guard B — duplicate-uuid skip (Step D dispatch loop).
+	//   Location: the line `if (duplicateUuidSet.has(uuid) && (!server || server.deleted_at === null)) continue;`.
+	//   Removal effect: dispatch calls decide for both files of a duplicate set,
+	//   emitting real push actions instead of skipping.
+	//   Expected fixture failure: "duplicate huma_uuid refusal: emits no
+	//   actions and surfaces duplicateUuids" — actual actions array is non-empty
+	//   (one push per duplicate file).
+	//
+	// Both verifications must produce concrete failing assertions before this
+	// refactor is considered complete. SUMMARY MUST quote the verbatim vitest
+	// failure output (test name + assertion message) for both guards.
+});
