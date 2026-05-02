@@ -111,6 +111,7 @@ export type AuditEvent =
 	| "pull_apply"
 	| "pull_drop"
 	| "server_deleted"
+	| "stale_local_delete"
 	| "duplicate_uuid"
 	| "token_scan_warning"
 	| "auth_error";

@@ -48,5 +48,9 @@ export default tseslint.config(
 		"main.js",
 		"__mocks__",
 		"tests/fixtures",
+		// Sibling worktrees the GSD orchestrator creates live under
+		// .claude/worktrees and contain duplicate (often stale) copies of the
+		// source tree. They are out of scope for the in-tree lint pass.
+		".claude",
 	]),
 );

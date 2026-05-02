@@ -15,6 +15,35 @@ export interface HumaPluginData {
 	// Server-time of the last successful manifest fetch; used as `?since=`
 	// for delta polling in the sync engine.
 	lastSince: string | null;
+	// UUIDs the user has chosen to ignore in stale-local-delete state.
+	// Reconcile still produces stale-local-delete actions for these IDs;
+	// the engine filters them out before audit + status-bar surfacing.
+	// Cleaned up automatically when the server entry tombstones (the
+	// matching server_deleted action drops the manifest row and the id
+	// from this set). The manifest row is kept so re-creating the file
+	// at the same uuid stays linked to the server entry.
+	ignoredStaleIds: string[];
+	// Files the server has tombstoned but the user hasn't yet reviewed.
+	// Each cycle's reconcile re-emits a server-deleted action while the
+	// tombstone is still in the manifest's `since`-window; the plugin
+	// dedupes by id. Persisted across reloads so the review surface
+	// survives session restart. Cleared when the user picks Delete /
+	// Keep, or auto-cleared if the file no longer exists in the vault.
+	pendingServerDeletes: PendingServerDelete[];
+}
+
+export interface PendingServerDelete {
+	// Tombstoned UUID. Originally minted by the server; matches the
+	// `huma_uuid` frontmatter the local file still carries.
+	id: string;
+	// Last-known vault path at the moment the tombstone was first
+	// observed. May be stale if the user has since renamed the file.
+	path: string;
+	// ISO timestamp of when the plugin first observed this tombstone.
+	// Not the server's `archivedAt` — that field isn't surfaced in the
+	// reconcile action. Used only to display "tombstoned N ago" in the
+	// resolution modal.
+	firstSeenAt: string;
 }
 
 export interface HumaSettings {
@@ -52,4 +81,6 @@ export const DEFAULT_PLUGIN_DATA: HumaPluginData = {
 	manifest: [],
 	auditRing: [],
 	lastSince: null,
+	ignoredStaleIds: [],
+	pendingServerDeletes: [],
 };

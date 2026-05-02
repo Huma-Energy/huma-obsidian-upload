@@ -16,18 +16,28 @@ const FILTERS: { id: "all" | Severity; label: string }[] = [
 	{ id: "info", label: "Sync" },
 ];
 
+export interface AuditLogModalHooks {
+	onResolveStale?: () => void;
+	hasStale?: () => boolean;
+	onResolveServerDeleted?: () => void;
+	hasServerDeleted?: () => boolean;
+}
+
 export class AuditLogModal extends Modal {
 	private readonly entries: readonly AuditEntry[];
 	private readonly onClear?: () => Promise<void>;
+	private readonly hooks: AuditLogModalHooks;
 
 	constructor(
 		app: App,
 		entries: readonly AuditEntry[],
 		onClear?: () => Promise<void>,
+		hooks: AuditLogModalHooks = {},
 	) {
 		super(app);
 		this.entries = entries;
 		this.onClear = onClear;
+		this.hooks = hooks;
 	}
 
 	onOpen(): void {
@@ -112,10 +122,24 @@ export class AuditLogModal extends Modal {
 		}
 
 		// Build rows newest-first.
+		const canResolveStale =
+			!!this.hooks.onResolveStale &&
+			(this.hooks.hasStale?.() ?? false);
+		const canResolveServerDeleted =
+			!!this.hooks.onResolveServerDeleted &&
+			(this.hooks.hasServerDeleted?.() ?? false);
 		for (const e of [...this.entries].reverse()) {
 			const sev = severityFor(e.event);
+			const isResolvableStale =
+				e.event === "stale_local_delete" && canResolveStale;
+			const isResolvableServerDeleted =
+				e.event === "server_deleted" && canResolveServerDeleted;
+			const isClickable =
+				isResolvableStale || isResolvableServerDeleted;
 			const row = list.createDiv({
-				cls: `huma-audit-row huma-severity-${sev}`,
+				cls: `huma-audit-row huma-severity-${sev}${
+					isClickable ? " huma-audit-row--clickable" : ""
+				}`,
 			});
 			row.createSpan({ cls: "huma-audit-ts", text: e.timestamp });
 			row.createSpan({ cls: "huma-audit-event", text: e.event });
@@ -128,6 +152,29 @@ export class AuditLogModal extends Modal {
 				cls: "huma-audit-detail",
 				text: e.detail ?? "",
 			});
+			if (isClickable) {
+				row.setAttr("role", "button");
+				row.setAttr("tabindex", "0");
+				const ariaLabel = isResolvableStale
+					? `Resolve stale deletion for ${e.path}`
+					: `Review server-deleted file ${e.path}`;
+				row.setAttr("aria-label", ariaLabel);
+				const open = (): void => {
+					this.close();
+					if (isResolvableStale) {
+						this.hooks.onResolveStale?.();
+					} else if (isResolvableServerDeleted) {
+						this.hooks.onResolveServerDeleted?.();
+					}
+				};
+				row.addEventListener("click", open);
+				row.addEventListener("keydown", (ev) => {
+					if (ev.key === "Enter" || ev.key === " ") {
+						ev.preventDefault();
+						open();
+					}
+				});
+			}
 		}
 
 		setFilter("all");
@@ -156,6 +203,8 @@ function severityFor(event: AuditEvent): Severity {
 			return "error";
 		case "merge_dirty":
 		case "token_scan_warning":
+		case "stale_local_delete":
+		case "server_deleted":
 			return "warning";
 		default:
 			return "info";

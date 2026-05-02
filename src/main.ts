@@ -13,8 +13,22 @@ import { SyncEngine, type EngineState } from "./sync/engine";
 import { HumaSettingsTab } from "./ui/settings-tab";
 import { attachStatusBar, type StatusBarHandle } from "./ui/status-bar";
 import { AuditLogModal } from "./ui/audit-log-modal";
+import {
+	StaleResolutionModal,
+	type StaleEntryView,
+} from "./ui/stale-resolution-modal";
+import {
+	ServerDeletedResolutionModal,
+	type ServerDeletedEntryView,
+} from "./ui/server-deleted-resolution-modal";
 import { MobileStatusModal } from "./ui/mobile-status-modal";
+import type {
+	ServerDeletedAction,
+	StaleLocalDeleteAction,
+} from "./sync/reconcile";
+import type { PendingServerDelete } from "./settings";
 import { listConflictFiles } from "./sync/conflict";
+import { runPullWorker } from "./sync/pull-worker";
 import { scanVaultForTokens } from "./security/vault-token-scan";
 import { pushAuditMany } from "./audit/ring";
 import { parseFile } from "./sync/frontmatter";
@@ -40,6 +54,7 @@ export default class HumaVaultSyncPlugin extends Plugin {
 	private pollHandle: number | null = null;
 	private currentState: EngineState | { kind: "signed-out" } = { kind: "signed-out" };
 	private readonly selfWriteTracker = new SelfWriteTracker();
+	private lastStaleEntries: readonly StaleLocalDeleteAction[] = [];
 
 	async onload(): Promise<void> {
 		await this.loadAll();
@@ -50,7 +65,28 @@ export default class HumaVaultSyncPlugin extends Plugin {
 			const statusBarEl = this.addStatusBarItem();
 			this.statusBar = attachStatusBar(statusBarEl);
 			this.statusBar.onClick((state) => {
-				if (state.kind === "error" || state.kind === "conflict") {
+				if (state.kind === "conflict") {
+					// Route directly to a resolution modal when only one
+					// kind of issue is outstanding. Otherwise fall back to
+					// the audit log so the user can see all the noise at
+					// once.
+					const onlyServerDeleted =
+						state.serverDeletedCount > 0 &&
+						state.conflictCount === 0 &&
+						state.staleCount === 0 &&
+						state.duplicateCount === 0;
+					const onlyStale =
+						state.staleCount > 0 &&
+						state.conflictCount === 0 &&
+						state.serverDeletedCount === 0;
+					if (onlyServerDeleted) {
+						this.openServerDeletedResolutionModal();
+					} else if (onlyStale) {
+						this.openStaleResolutionModal();
+					} else {
+						this.openAuditLog();
+					}
+				} else if (state.kind === "error") {
 					this.openAuditLog();
 				} else {
 					new Notice(
@@ -130,6 +166,11 @@ export default class HumaVaultSyncPlugin extends Plugin {
 				await this.saveAll();
 			},
 			getExcludedFolders: () => this.data.settings.excludedFolders,
+			getIgnoredStaleIds: () => this.data.ignoredStaleIds,
+			saveIgnoredStaleIds: async (ids) => {
+				this.data.ignoredStaleIds = ids;
+				await this.saveAll();
+			},
 			callbacks: {
 				onState: (state) => this.onEngineState(state),
 			},
@@ -169,9 +210,68 @@ export default class HumaVaultSyncPlugin extends Plugin {
 					conflictCount: state.conflicts,
 					staleCount: state.stale,
 					duplicateCount: state.duplicates,
+					serverDeletedCount: this.countPendingServerDeletes(),
 				});
 				return;
 		}
+	}
+
+	// If the engine just settled into idle/error but there are server-
+	// deleted files awaiting review, force the status bar into conflict
+	// state so the count is surfaced. Engine state alone wouldn't surface
+	// this — pendingServerDeletes is plugin-side state, not reconcile-state.
+	private renderStatusBarPostSync(): void {
+		if (!this.statusBar) return;
+		if (this.countPendingServerDeletes() === 0) return;
+		// Pull current conflict / stale / duplicate counts from the most
+		// recent engine state if it was already a conflict; otherwise zero
+		// them out. Either way, the server-deleted count alone is enough
+		// to keep the bar in conflict.
+		const current = this.currentState;
+		const conflictBase =
+			current.kind === "conflict"
+				? current
+				: { conflicts: 0, stale: 0, duplicates: 0 };
+		this.statusBar.render({
+			kind: "conflict",
+			conflictCount: conflictBase.conflicts,
+			staleCount: conflictBase.stale,
+			duplicateCount: conflictBase.duplicates,
+			serverDeletedCount: this.countPendingServerDeletes(),
+		});
+	}
+
+	private countPendingServerDeletes(): number {
+		// Active count = pending entries whose vault files still exist.
+		// Files the user manually deleted between cycles auto-clear from
+		// the surface (they're cleaned up on next viewPendingServerDeletes
+		// access; here we just count what's currently visible).
+		return this.data.pendingServerDeletes.filter((p) =>
+			this.app.vault.getAbstractFileByPath(p.path) instanceof TFile
+				? true
+				: false,
+		).length;
+	}
+
+	private async recordServerDeletedActions(
+		actions: readonly ServerDeletedAction[],
+	): Promise<void> {
+		if (actions.length === 0) return;
+		const existing = new Set(
+			this.data.pendingServerDeletes.map((p) => p.id),
+		);
+		const now = new Date().toISOString();
+		const additions: PendingServerDelete[] = [];
+		for (const a of actions) {
+			if (existing.has(a.serverId)) continue;
+			additions.push({ id: a.serverId, path: a.path, firstSeenAt: now });
+		}
+		if (additions.length === 0) return;
+		this.data.pendingServerDeletes = [
+			...this.data.pendingServerDeletes,
+			...additions,
+		];
+		await this.saveAll();
 	}
 
 	private onEngineState(state: EngineState): void {
@@ -313,7 +413,18 @@ export default class HumaVaultSyncPlugin extends Plugin {
 	async runFullSync(): Promise<void> {
 		if (!this.engine || !this.data.tokens || this.startupBlocked) return;
 		try {
-			await this.engine.runSync();
+			const result = await this.engine.runSync();
+			this.lastStaleEntries = result.actions.filter(
+				(a): a is StaleLocalDeleteAction =>
+					a.kind === "stale-local-delete",
+			);
+			await this.recordServerDeletedActions(
+				result.actions.filter(
+					(a): a is ServerDeletedAction =>
+						a.kind === "server-deleted",
+				),
+			);
+			this.renderStatusBarPostSync();
 		} catch (err) {
 			new Notice(classifyErrorForUser(err), 6000);
 			// Auth-class failures: TokenManager has already cleared stored
@@ -488,8 +599,18 @@ export default class HumaVaultSyncPlugin extends Plugin {
 	}
 
 	private openAuditLog(): void {
-		new AuditLogModal(this.app, this.data.auditRing, () =>
-			this.clearAuditLog(),
+		new AuditLogModal(
+			this.app,
+			this.data.auditRing,
+			() => this.clearAuditLog(),
+			{
+				onResolveStale: () => this.openStaleResolutionModal(),
+				hasStale: () => this.lastStaleEntries.length > 0,
+				onResolveServerDeleted: () =>
+					this.openServerDeletedResolutionModal(),
+				hasServerDeleted: () =>
+					this.countPendingServerDeletes() > 0,
+			},
 		).open();
 	}
 
@@ -500,6 +621,215 @@ export default class HumaVaultSyncPlugin extends Plugin {
 	async clearAuditLog(): Promise<void> {
 		this.data.auditRing.length = 0;
 		await this.saveAll();
+	}
+
+	openStaleResolutionModal(): void {
+		new StaleResolutionModal(this.app, {
+			getEntries: () => this.viewStaleEntries(),
+			restore: (serverId) => this.restoreStaleDeletion(serverId),
+			ignore: (serverId) => this.ignoreStaleDeletion(serverId),
+		}).open();
+	}
+
+	private viewStaleEntries(): StaleEntryView[] {
+		const manifestById = new Map<string, ManifestRecord>();
+		for (const r of this.data.manifest) manifestById.set(r.id, r);
+		return this.lastStaleEntries.map((e) => {
+			const m = manifestById.get(e.serverId);
+			return {
+				serverId: e.serverId,
+				path: e.path,
+				lastSyncedAt: m?.lastSyncedAt ?? null,
+			};
+		});
+	}
+
+	async restoreStaleDeletion(serverId: string): Promise<void> {
+		// Direct pull via pull-worker, bypassing reconcile + sync cycle.
+		// Going through `runFullSync` is racy: if a sync is already inflight
+		// when restore is invoked, `engine.runSync()` coalesces our call onto
+		// the inflight promise. That cycle was reading the manifest before
+		// our drop, and its end-of-cycle `saveManifest` overwrites our drop
+		// — leaving the manifest in its pre-restore state and forcing the
+		// user to wait for the next polling cycle (≥ 30 s). The direct path
+		// is also simpler: one API call + one file write, no reconcile.
+		if (!this.vaultApi || !this.engine) {
+			throw new Error("not signed in");
+		}
+		// Wait for any inflight polling cycle to finish before we mutate the
+		// manifest out-of-band. Without this guard, the inflight cycle's
+		// end-of-cycle `saveManifest` would overwrite our update.
+		await this.engine.awaitInflight();
+		const result = await runPullWorker(
+			this.vaultApi,
+			this.app,
+			[serverId],
+			this.data.manifest,
+			this.selfWriteTracker,
+		);
+		if (result.errors.length > 0) {
+			throw new Error(result.errors[0]!.error);
+		}
+		if (result.written === 0) {
+			throw new Error(
+				"Server returned no file for that id (it may have been tombstoned since the last sync).",
+			);
+		}
+
+		this.data.manifest = result.updatedManifest;
+		const auditEntries: AuditEntry[] = result.audit.map((p) => ({
+			timestamp: p.timestamp,
+			event: "pull_apply",
+			path: p.path,
+			id: p.id,
+		}));
+		pushAuditMany(this.data.auditRing, auditEntries);
+		await this.saveAll();
+
+		// Drop the resolved entry from the cached stale list so the modal
+		// re-renders without it. The status-bar count is canonical from the
+		// engine's last reconcile; trigger a background sync (no await) so
+		// the bar refreshes on its own without blocking the user-visible
+		// restore-then-reveal flow.
+		this.lastStaleEntries = this.lastStaleEntries.filter(
+			(e) => e.serverId !== serverId,
+		);
+		void this.runFullSync();
+
+		// Open the restored file so the File Explorer reveals it. The
+		// pulled record's path is authoritative (server may have renamed
+		// the file since the local-delete).
+		const restoredPath = result.audit[0]?.path;
+		if (!restoredPath) return;
+		const file = this.app.vault.getAbstractFileByPath(restoredPath);
+		if (!(file instanceof TFile)) return;
+		const leaf = this.app.workspace.getLeaf(false);
+		await leaf.openFile(file);
+		// Best-effort reveal in the file-explorer side panel. The
+		// command is shipped by core; if disabled, openFile already
+		// activated the leaf which is enough for the user to spot it.
+		// `commands` is not in the public types but is stable on the
+		// app object at runtime — community-plugin convention.
+		const commands = (
+			this.app as unknown as {
+				commands?: {
+					executeCommandById?: (id: string) => boolean;
+				};
+			}
+		).commands;
+		commands?.executeCommandById?.("file-explorer:reveal-active-file");
+	}
+
+	openServerDeletedResolutionModal(): void {
+		new ServerDeletedResolutionModal(this.app, {
+			getEntries: () => this.viewServerDeletedEntries(),
+			deleteLocally: (id) => this.deleteServerDeletedFile(id),
+			keepLocally: (id) => this.keepServerDeletedFile(id),
+		}).open();
+	}
+
+	private viewServerDeletedEntries(): ServerDeletedEntryView[] {
+		// Auto-clear pending entries whose files no longer exist (user
+		// deleted manually between cycles). Returns only entries whose
+		// vault file is still on disk.
+		const visible: ServerDeletedEntryView[] = [];
+		const survivors: PendingServerDelete[] = [];
+		let changed = false;
+		for (const p of this.data.pendingServerDeletes) {
+			const file = this.app.vault.getAbstractFileByPath(p.path);
+			if (file instanceof TFile) {
+				visible.push({
+					id: p.id,
+					path: p.path,
+					firstSeenAt: p.firstSeenAt,
+				});
+				survivors.push(p);
+			} else {
+				changed = true;
+			}
+		}
+		if (changed) {
+			this.data.pendingServerDeletes = survivors;
+			void this.saveAll();
+		}
+		return visible;
+	}
+
+	async deleteServerDeletedFile(serverId: string): Promise<void> {
+		const pending = this.data.pendingServerDeletes.find(
+			(p) => p.id === serverId,
+		);
+		if (!pending) {
+			throw new Error("Pending entry not found.");
+		}
+		const file = this.app.vault.getAbstractFileByPath(pending.path);
+		if (!(file instanceof TFile)) {
+			// File already gone — just clear the pending entry.
+			await this.clearPendingServerDelete(serverId);
+			return;
+		}
+		// `fileManager.trashFile` respects the user's "Files & links →
+		// Deleted files" setting (system trash, Obsidian's .trash/, or
+		// permanent). Using vault.trash directly would force a choice
+		// and ignore the preference.
+		await this.app.fileManager.trashFile(file);
+		await this.clearPendingServerDelete(serverId);
+	}
+
+	async keepServerDeletedFile(serverId: string): Promise<void> {
+		const pending = this.data.pendingServerDeletes.find(
+			(p) => p.id === serverId,
+		);
+		if (!pending) {
+			throw new Error("Pending entry not found.");
+		}
+		const file = this.app.vault.getAbstractFileByPath(pending.path);
+		if (!(file instanceof TFile)) {
+			await this.clearPendingServerDelete(serverId);
+			return;
+		}
+		// Strip huma_uuid from frontmatter so the file becomes an
+		// untracked local copy. processFrontMatter is atomic over the
+		// frontmatter region — the body is untouched. After this, scan
+		// will route the file through scannedNoUuid; if the user later
+		// edits + the plugin pushes, it'll allocate a fresh UUID
+		// server-side. The original tombstoned UUID remains orphaned.
+		await this.app.fileManager.processFrontMatter(
+			file,
+			(fm: Record<string, unknown>) => {
+				delete fm.huma_uuid;
+			},
+		);
+		await this.clearPendingServerDelete(serverId);
+	}
+
+	private async clearPendingServerDelete(serverId: string): Promise<void> {
+		this.data.pendingServerDeletes = this.data.pendingServerDeletes.filter(
+			(p) => p.id !== serverId,
+		);
+		await this.saveAll();
+		this.renderStatusBarPostSync();
+		// Re-render against current engine state if no more pending; the
+		// engine's last state is correct in that case.
+		if (this.data.pendingServerDeletes.length === 0) {
+			this.renderStatusBar(this.currentState);
+		}
+	}
+
+	async ignoreStaleDeletion(serverId: string): Promise<void> {
+		// Adds the UUID to the ignored set so future reconcile cycles
+		// suppress the stale-local-delete action for it. Manifest row is
+		// preserved (re-creating the file at the same uuid stays linked
+		// to the server entry). The set is auto-cleaned when the server
+		// tombstones the file (see engine's tombstone block).
+		if (this.data.ignoredStaleIds.includes(serverId)) return;
+		this.data.ignoredStaleIds = [...this.data.ignoredStaleIds, serverId];
+		await this.saveAll();
+		this.lastStaleEntries = this.lastStaleEntries.filter(
+			(e) => e.serverId !== serverId,
+		);
+		// Refresh the engine's view so the status-bar count updates.
+		void this.runFullSync();
 	}
 
 	private openMobileStatus(): void {
@@ -543,5 +873,8 @@ function mergeData(stored: Partial<HumaPluginData> | null): HumaPluginData {
 		manifest: stored.manifest ?? base.manifest,
 		auditRing: stored.auditRing ?? base.auditRing,
 		lastSince: stored.lastSince ?? null,
+		ignoredStaleIds: stored.ignoredStaleIds ?? base.ignoredStaleIds,
+		pendingServerDeletes:
+			stored.pendingServerDeletes ?? base.pendingServerDeletes,
 	};
 }

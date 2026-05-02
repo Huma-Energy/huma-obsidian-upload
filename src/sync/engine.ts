@@ -15,7 +15,12 @@ import {
 	type PushOutcome,
 	type PushWorkerResult,
 } from "./push-worker";
-import { reconcile, type RenameLocalAction, type SyncAction } from "./reconcile";
+import {
+	reconcile,
+	type RenameLocalAction,
+	type StaleLocalDeleteAction,
+	type SyncAction,
+} from "./reconcile";
 import { scanVault, type ScannedFile } from "./scan";
 import { listConflictFiles } from "./conflict";
 import { applyRenameToManifest, processRenameLocal } from "./rename-local";
@@ -58,6 +63,12 @@ export interface SyncEngineDeps {
 	getLastSince(): string | null;
 	saveLastSince(iso: string): Promise<void>;
 	getExcludedFolders(): readonly string[];
+	// User-chosen set of UUIDs to suppress stale-local-delete surfacing for.
+	// Reconcile still emits the actions; engine filters them post-reconcile.
+	// `saveIgnoredStaleIds` is called when the engine cleans up entries the
+	// server has tombstoned (so the set doesn't grow unbounded).
+	getIgnoredStaleIds(): readonly string[];
+	saveIgnoredStaleIds(ids: string[]): Promise<void>;
 	callbacks?: SyncEngineCallbacks;
 }
 
@@ -86,6 +97,19 @@ export class SyncEngine {
 		return this.inflight;
 	}
 
+	// Awaits the in-flight sync if one is running; resolves immediately
+	// otherwise. Used by out-of-band manifest writes (e.g. stale-delete
+	// restore) that need to ensure no concurrent saveManifest can clobber
+	// their update without forcing a fresh cycle to run.
+	async awaitInflight(): Promise<void> {
+		if (!this.inflight) return;
+		try {
+			await this.inflight;
+		} catch {
+			// Errors are surfaced via onState; we just need the slot clear.
+		}
+	}
+
 	scheduleDebouncedSync(delayMs: number = 5_000): void {
 		if (this.debounceTimer) clearTimeout(this.debounceTimer);
 		this.debounceTimer = setTimeout(() => {
@@ -111,12 +135,36 @@ export class SyncEngine {
 			const serverManifest = await fetchEntireManifest(api, sinceForFetch);
 			const scanned = await scanVault(app, excludedFolders);
 			const localManifest = this.deps.getManifest();
-			const { actions, stats, duplicateUuids } = reconcile({
+			const reconciled = reconcile({
 				serverManifest: serverManifest.entries,
 				localManifest,
 				scanned,
 				excludedFolders,
 			});
+			// User-policy filter: suppress stale-local-delete actions for
+			// UUIDs the user has chosen to ignore. Reconcile stays a pure
+			// spec; the policy lives outside it. `stats.staleLocalDelete`
+			// is updated to match so the audit + status-bar surface the
+			// true post-filter counts.
+			const ignoredStaleIds = new Set(this.deps.getIgnoredStaleIds());
+			let actions = reconciled.actions;
+			let stats = reconciled.stats;
+			const duplicateUuids = reconciled.duplicateUuids;
+			if (ignoredStaleIds.size > 0) {
+				const beforeStale = stats.staleLocalDelete;
+				actions = actions.filter(
+					(a) =>
+						!(
+							a.kind === "stale-local-delete" &&
+							ignoredStaleIds.has(a.serverId)
+						),
+				);
+				const afterStale = actions.filter(
+					(a) => a.kind === "stale-local-delete",
+				).length;
+				stats = { ...stats, staleLocalDelete: afterStale };
+				void beforeStale;
+			}
 			callbacks?.onState({ kind: "syncing", pending: actions.length });
 
 			const scannedByPath = new Map<string, ScannedFile>();
@@ -127,9 +175,12 @@ export class SyncEngine {
 			const renameLocals: RenameLocalAction[] = [];
 			const pullIds: string[] = [];
 			const pushInputs: PushAttemptInput[] = [];
+			const staleLocalDeletes: StaleLocalDeleteAction[] = [];
 			for (const action of actions) {
 				if (action.kind === "rename-local") renameLocals.push(action);
 				else if (action.kind === "pull") pullIds.push(action.serverId);
+				else if (action.kind === "stale-local-delete")
+					staleLocalDeletes.push(action);
 				else if (action.kind === "push" || action.kind === "add") {
 					const lookupPath =
 						action.kind === "push" && action.serverId
@@ -220,6 +271,21 @@ export class SyncEngine {
 				manifestSnapshot = manifestSnapshot.filter(
 					(r) => !tombstones.has(r.id),
 				);
+				// Cleanup: any tombstoned id that was in the ignored-stale
+				// set no longer needs to be there (server propagated the
+				// delete; the matching local row just got dropped). Keeps
+				// the set bounded.
+				if (ignoredStaleIds.size > 0) {
+					let changed = false;
+					for (const row of droppedRows) {
+						if (ignoredStaleIds.delete(row.id)) changed = true;
+					}
+					if (changed) {
+						await this.deps.saveIgnoredStaleIds(
+							Array.from(ignoredStaleIds),
+						);
+					}
+				}
 			}
 
 			const pullDropAuditEntries: AuditEntry[] = (pullResult?.dropped ?? []).map(
@@ -240,11 +306,27 @@ export class SyncEngine {
 				detail: `${d.paths.length} files share huma_uuid ${d.uuid}; sync skipped until resolved`,
 			}));
 
+			// Stale-local-delete: file is in the local manifest but absent from
+			// the vault scan while still live on the server. Plugin does NOT
+			// auto-delete server-side (delete-sync is v1.1) — surfaces via the
+			// status bar's `conflict` state with `staleCount`. Logged here so the
+			// user can trace which file produced the warning.
+			const staleLocalDeleteAuditEntries: AuditEntry[] = staleLocalDeletes.map(
+				(a) => ({
+					timestamp: new Date().toISOString(),
+					event: "stale_local_delete",
+					path: a.path,
+					id: a.serverId,
+					detail: "local file missing while server entry is live; no auto-action (delete-sync deferred)",
+				}),
+			);
+
 			const audit: AuditEntry[] = [
 				...renameAuditEntries,
 				...tombstoneAuditEntries,
 				...pullDropAuditEntries,
 				...duplicateAuditEntries,
+				...staleLocalDeleteAuditEntries,
 				...collectAudit(
 					pushResult?.outcomes ?? [],
 					pullResult?.audit ?? [],
