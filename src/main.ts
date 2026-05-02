@@ -6,13 +6,15 @@ import {
 	type StoredTokens,
 } from "./settings";
 import { FetchHttpClient, HttpError } from "./client/http";
-import { AuthClient, runDevicePollLoop } from "./client/auth";
+import { AuthClient } from "./client/auth";
 import { VaultApiClient } from "./client/vault-api";
 import { TokenManager } from "./sync/token-manager";
 import { SyncEngine, type EngineState } from "./sync/engine";
 import { HumaSettingsTab } from "./ui/settings-tab";
 import { attachStatusBar, type StatusBarHandle } from "./ui/status-bar";
 import { AuditLogModal } from "./ui/audit-log-modal";
+import { SignInModal } from "./ui/sign-in-modal";
+import { WelcomeModal } from "./ui/welcome-modal";
 import {
 	StaleResolutionModal,
 	type StaleEntryView,
@@ -128,8 +130,24 @@ export default class HumaVaultSyncPlugin extends Plugin {
 		this.renderStatusBar({ kind: "signed-out" });
 	}
 
-	onunload(): void {
+	// Obsidian's Plugin types declare onunload as `void`-returning, but the
+	// runtime awaits the result if a Promise is returned. Returning a
+	// Promise is the correct pattern here: we need saveAll to finish before
+	// the plugin instance is destroyed, otherwise the cleared-tokens state
+	// can be lost.
+	// eslint-disable-next-line @typescript-eslint/no-misused-promises
+	async onunload(): Promise<void> {
 		this.stopPolling();
+		// Conservative: clear only OAuth tokens so disabling the plugin
+		// does not leave credentials at rest in data.json. Sync state
+		// (manifest, audit ring, lastSince, ignored ids, pending server
+		// deletes, welcomeSeenAt) is preserved so re-enable resumes
+		// without a full re-pull. The Reset local sync state command
+		// wipes the rest.
+		if (this.data.tokens !== null) {
+			this.data.tokens = null;
+			await this.saveAll();
+		}
 	}
 
 	async loadAll(): Promise<void> {
@@ -292,8 +310,14 @@ export default class HumaVaultSyncPlugin extends Plugin {
 		if (this.data.tokens) {
 			void this.runFullSync();
 			this.startPolling();
-		} else {
-			this.renderStatusBar({ kind: "signed-out" });
+			return;
+		}
+		this.renderStatusBar({ kind: "signed-out" });
+		// First-run welcome trigger: no tokens AND welcome never seen.
+		// The modal walks the user through Sign in → first sync; sets
+		// welcomeSeenAt only after Step 3's "Get started" button.
+		if (this.data.welcomeSeenAt === null) {
+			this.openWelcomeModal();
 		}
 	}
 
@@ -344,43 +368,42 @@ export default class HumaVaultSyncPlugin extends Plugin {
 		}
 		if (!this.auth) throw new Error("Auth client not initialised.");
 
-		const progress = await this.auth.startDeviceFlow();
-		const { deviceCode, intervalSeconds } = progress;
-		window.open(deviceCode.verification_uri_complete, "_blank");
-		new Notice(
-			`Huma sign-in: enter code ${deviceCode.user_code} in your browser. ` +
-				`This window will sign you in automatically when you confirm.`,
-			Math.min(deviceCode.expires_in, 600) * 1000,
-		);
-
-		const result = await runDevicePollLoop({
-			sessionId: deviceCode.session_id,
-			intervalSeconds,
-			expiresInSeconds: deviceCode.expires_in,
-			sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
-			poll: (sessionId) => {
-				if (!this.auth) throw new Error("Auth client gone.");
-				return this.auth.pollDeviceToken(sessionId);
-			},
+		// The modal owns the entire device-flow lifecycle (display, polling,
+		// cancel, retry). The plugin just wires up auth-client deps + the
+		// post-success token-persist via finishSignIn.
+		return new Promise<void>((resolve, reject) => {
+			new SignInModal(this.app, {
+				startDeviceFlow: () => {
+					if (!this.auth) {
+						return Promise.reject(
+							new Error("Auth client not initialised."),
+						);
+					}
+					return this.auth.startDeviceFlow();
+				},
+				poll: (sessionId) => {
+					if (!this.auth) {
+						return Promise.reject(new Error("Auth client gone."));
+					}
+					return this.auth.pollDeviceToken(sessionId);
+				},
+				onSuccess: async (tokens) => {
+					await this.finishSignIn(tokens);
+					resolve();
+				},
+				onCancel: () => resolve(),
+				onError: (err) =>
+					reject(err instanceof Error ? err : new Error(String(err))),
+			}).open();
 		});
+	}
 
-		switch (result.kind) {
-			case "tokens":
-				this.data.tokens = result.tokens;
-				await this.saveAll();
-				new Notice("Huma: signed in.", 3000);
-				void this.runFullSync();
-				this.startPolling();
-				return;
-			case "denied":
-				throw new Error("Sign-in denied at the verification page.");
-			case "expired":
-				throw new Error(
-					"Sign-in code expired before confirmation. Try again.",
-				);
-			case "aborted":
-				throw new Error("Sign-in aborted.");
-		}
+	private async finishSignIn(tokens: StoredTokens): Promise<void> {
+		this.data.tokens = tokens;
+		await this.saveAll();
+		new Notice("Huma: signed in.", 3000);
+		void this.runFullSync();
+		this.startPolling();
 	}
 
 	async signOut(): Promise<void> {
@@ -411,6 +434,7 @@ export default class HumaVaultSyncPlugin extends Plugin {
 		this.data.manifest = [];
 		this.data.lastSince = null;
 		this.data.auditRing = [];
+		this.data.welcomeSeenAt = null;
 		await this.saveAll();
 		new Notice("Huma: local sync state cleared.", 3000);
 	}
@@ -837,6 +861,63 @@ export default class HumaVaultSyncPlugin extends Plugin {
 		void this.runFullSync();
 	}
 
+	private openWelcomeModal(): void {
+		new WelcomeModal(this.app, {
+			getServerUrl: () => this.data.settings.serverBaseUrl,
+			setServerUrl: async (url) => {
+				const trimmed = url.trim().replace(/\/+$/, "");
+				this.data.settings.serverBaseUrl = trimmed;
+				await this.saveAll();
+				this.rebuildHttpClient();
+			},
+			startSignIn: (welcomeCallbacks) => {
+				if (!this.auth) {
+					welcomeCallbacks.onError(
+						new Error("Auth client not initialised."),
+					);
+					return;
+				}
+				new SignInModal(this.app, {
+					startDeviceFlow: () => {
+						if (!this.auth) {
+							return Promise.reject(
+								new Error("Auth client not initialised."),
+							);
+						}
+						return this.auth.startDeviceFlow();
+					},
+					poll: (sessionId) => {
+						if (!this.auth) {
+							return Promise.reject(
+								new Error("Auth client gone."),
+							);
+						}
+						return this.auth.pollDeviceToken(sessionId);
+					},
+					onSuccess: async (tokens) => {
+						await this.finishSignIn(tokens);
+						await welcomeCallbacks.onSuccess();
+					},
+					onCancel: () => welcomeCallbacks.onCancel(),
+					onError: (err) => welcomeCallbacks.onError(err),
+				}).open();
+			},
+			runFirstSync: async () => {
+				if (!this.engine) return null;
+				try {
+					return await this.engine.runSync();
+				} catch {
+					// Surface to the modal via lastError handling.
+					return null;
+				}
+			},
+			markWelcomeSeen: async () => {
+				this.data.welcomeSeenAt = new Date().toISOString();
+				await this.saveAll();
+			},
+		}).open();
+	}
+
 	private openMobileStatus(): void {
 		new MobileStatusModal(this.app, {
 			getState: () => this.currentState,
@@ -881,5 +962,6 @@ function mergeData(stored: Partial<HumaPluginData> | null): HumaPluginData {
 		ignoredStaleIds: stored.ignoredStaleIds ?? base.ignoredStaleIds,
 		pendingServerDeletes:
 			stored.pendingServerDeletes ?? base.pendingServerDeletes,
+		welcomeSeenAt: stored.welcomeSeenAt ?? base.welcomeSeenAt,
 	};
 }

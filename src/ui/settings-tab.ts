@@ -18,15 +18,23 @@ export class HumaSettingsTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
+		this.renderAuthSection(containerEl);
+		this.renderSyncActionSection(containerEl);
+		this.renderServerUrlSection(containerEl);
+		this.renderSyncIntervalSection(containerEl);
+		this.renderExclusionsSection(containerEl);
+		this.renderObsidianSyncSection(containerEl);
+		this.renderSyncLogSection(containerEl);
+	}
+
+	private renderServerUrlSection(containerEl: HTMLElement): void {
 		new Setting(containerEl)
 			.setName("Server base URL")
 			.setDesc(
-				"Origin of the Huma dashboard, e.g. https://huma.energy. No trailing slash.",
+				"This is where your notes will sync to. Most users should leave this as is. Change only if you've been given a custom server URL.",
 			)
 			.addText((text) =>
-				text
-					// eslint-disable-next-line obsidianmd/ui/sentence-case -- URL placeholder, not UI prose
-					.setPlaceholder("https://huma.energy")
+				text.setPlaceholder("https://humagreenfield.netlify.app")
 					.setValue(this.plugin.data.settings.serverBaseUrl)
 					.onChange(async (value) => {
 						const trimmed = value.trim().replace(/\/+$/, "");
@@ -35,13 +43,6 @@ export class HumaSettingsTab extends PluginSettingTab {
 						this.plugin.rebuildHttpClient();
 					}),
 			);
-
-		this.renderAuthSection(containerEl);
-		this.renderSyncActionSection(containerEl);
-		this.renderSyncIntervalSection(containerEl);
-		this.renderExclusionsSection(containerEl);
-		this.renderObsidianSyncSection(containerEl);
-		this.renderSyncLogSection(containerEl);
 	}
 
 	private renderSyncActionSection(containerEl: HTMLElement): void {
@@ -50,10 +51,11 @@ export class HumaSettingsTab extends PluginSettingTab {
 		// an immediate cycle (same code path as the command palette
 		// "Sync now" command and the ribbon icon).
 		const signedIn = this.plugin.data.tokens !== null;
+		const intervalSec = this.plugin.data.settings.syncIntervalSeconds;
 		new Setting(containerEl)
 			.setName("Sync now")
 			.setDesc(
-				"Run a full sync cycle immediately. Equivalent to the command-palette sync action and the ribbon icon.",
+				`Run a sync right now. Otherwise the plugin syncs automatically every ${intervalSec} seconds.`,
 			)
 			.addButton((btn) => {
 				btn.setButtonText("Sync now").setCta();
@@ -105,7 +107,8 @@ export class HumaSettingsTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Sync log")
 			.setDesc(
-				"Local audit ring (200 entries) of recent sync events and token-scan warnings. The dashboard's audit log is the canonical record.",
+				// eslint-disable-next-line obsidianmd/ui/sentence-case -- "Huma" is the product name
+				"View the last 200 sync events from this device. Helpful for tracing what the plugin did or didn't do. The Huma server has the full history.",
 			)
 			.addButton((btn) =>
 				btn.setButtonText("Show sync log").onClick(() => {
@@ -156,7 +159,8 @@ export class HumaSettingsTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Excluded folders")
 			.setDesc(
-				"One vault-relative folder path per line. Files inside these folders will not sync. Existing copies on the server are not deleted when a folder is added here — archive them on the dashboard if you want them removed.",
+				// eslint-disable-next-line obsidianmd/ui/sentence-case -- "Huma" is the product name
+				"One folder per line. Files inside these folders won't sync to Huma. Already-synced files stay on the server frozen at their last version — archive them in the Huma web app to remove them entirely.",
 			)
 			.addTextArea((area) => {
 				// eslint-disable-next-line obsidianmd/ui/sentence-case -- folder-path examples, not UI prose
@@ -198,7 +202,7 @@ export class HumaSettingsTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Sync interval (seconds)")
 			.setDesc(
-				`How often the plugin polls the dashboard for changes on desktop. Mobile syncs only on foreground resume. Min ${SYNC_INTERVAL_MIN_SECONDS}, max ${SYNC_INTERVAL_MAX_SECONDS}.`,
+				`How often the plugin checks for changes (in seconds). Lower numbers feel snappier; higher numbers use less network. Mobile only syncs when you open the app — this setting doesn't apply there. Min ${SYNC_INTERVAL_MIN_SECONDS}, max ${SYNC_INTERVAL_MAX_SECONDS}.`,
 			)
 			.addSlider((slider) =>
 				slider
@@ -221,16 +225,16 @@ function authDescription(
 	tokens: { access_expires_at: number } | null,
 ): string {
 	if (tokens === null) {
-		return "Not signed in. Sign-in opens your default browser for the ZITADEL device flow; tokens are stored only in plugin data, never in the vault.";
+		return "Connect this vault to your Huma account. Sign-in opens your browser to confirm — no password is stored locally.";
 	}
 	const remainingMs = tokens.access_expires_at - Date.now();
 	if (remainingMs <= 0) {
-		return "Signed in. Access token expired — will refresh on next request.";
+		return "You're connected to Huma. Sign out to disconnect this device. Your sync state stays on disk so you can sign back in later without re-pulling everything. Access token expired — will refresh on next request.";
 	}
 	const minutes = Math.round(remainingMs / 60_000);
-	return `Signed in. Access token expires in ~${minutes} minute${
+	return `You're connected to Huma. Sign out to disconnect this device. Your sync state stays on disk so you can sign back in later without re-pulling everything. Access token expires in ~${minutes} minute${
 		minutes === 1 ? "" : "s"
-	} (refresh-token rotation handles renewal automatically).`;
+	} (refreshes automatically).`;
 }
 
 function describeError(err: unknown): string {

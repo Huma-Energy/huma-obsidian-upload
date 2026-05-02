@@ -1,3 +1,7 @@
+<p align="center">
+	<img src="./assets/icon.png" alt="Huma Vault Sync" width="96" height="96">
+</p>
+
 # Huma Vault Sync
 
 Bidirectional sync between an [Obsidian](https://obsidian.md) vault and the [Huma](https://huma.energy) dashboard's collaborative editor.

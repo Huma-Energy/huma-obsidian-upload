@@ -29,3 +29,7 @@ coverage
 
 # Vitest cache
 .vitest-cache
+
+# Source-of-truth icon lives at assets/icon.png; the repo-root image is a
+# scratch copy from the user's machine.
+huma-webicon.png

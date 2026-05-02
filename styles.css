@@ -217,3 +217,110 @@
 	flex-shrink: 0;
 }
 
+.huma-signin-tip {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin-bottom: 1em;
+}
+
+.huma-signin-code-row {
+	display: flex;
+	justify-content: center;
+	margin: 1.5em 0 1em;
+}
+
+.huma-signin-code {
+	font-family: var(--font-monospace);
+	font-size: 2em;
+	font-weight: var(--font-bold);
+	letter-spacing: 0.1em;
+	padding: 0.4em 0.8em;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	background-color: var(--background-secondary);
+	user-select: all;
+}
+
+.huma-signin-actions {
+	display: flex;
+	justify-content: center;
+	gap: 0.5em;
+	margin-bottom: 1em;
+}
+
+.huma-signin-status {
+	text-align: center;
+	color: var(--text-muted);
+	margin-bottom: 0.5em;
+}
+
+.huma-signin-expiry {
+	text-align: center;
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	margin-bottom: 1em;
+}
+
+.huma-signin-expiry--low {
+	color: var(--text-warning);
+}
+
+.huma-signin-footer {
+	display: flex;
+	justify-content: flex-end;
+	gap: 0.5em;
+}
+
+.huma-welcome-tip {
+	color: var(--text-muted);
+	margin-bottom: 1em;
+}
+
+.huma-welcome-error {
+	color: var(--text-error);
+	font-size: var(--font-ui-small);
+	margin-bottom: 1em;
+}
+
+.huma-welcome-url {
+	margin: 1.5em 0;
+	padding: 1em;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	background-color: var(--background-secondary);
+	text-align: center;
+}
+
+.huma-welcome-url-label {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	margin: 0 0 0.4em;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+
+.huma-welcome-url-value {
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-medium);
+	margin: 0;
+	word-break: break-all;
+}
+
+.huma-welcome-advanced {
+	margin: 1em 0;
+}
+
+.huma-welcome-advanced > summary {
+	cursor: pointer;
+	color: var(--text-accent);
+	font-size: var(--font-ui-small);
+	margin-bottom: 0.5em;
+}
+
+.huma-welcome-footer {
+	display: flex;
+	justify-content: flex-end;
+	gap: 0.5em;
+	margin-top: 1.5em;
+}
+
