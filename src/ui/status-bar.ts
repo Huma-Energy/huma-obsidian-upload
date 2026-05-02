@@ -115,8 +115,8 @@ export function formatStatusAria(state: StatusBarState): string {
 			return "Huma Vault Sync signed out. Click to open settings.";
 		case "idle":
 			return state.lastSyncedAt
-				? `Huma Vault Sync idle. Last synced ${state.lastSyncedAt}.`
-				: "Huma Vault Sync idle.";
+				? `Huma Vault Sync idle. Last synced ${state.lastSyncedAt}. Click to sync now.`
+				: "Huma Vault Sync idle. Click to sync now.";
 		case "syncing":
 			return `Huma Vault Sync syncing. ${state.pendingActions} actions pending.`;
 		case "error":
