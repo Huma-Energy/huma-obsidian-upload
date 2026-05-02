@@ -33,3 +33,14 @@ coverage
 # Source-of-truth icon lives at assets/icon.png; the repo-root image is a
 # scratch copy from the user's machine.
 huma-webicon.png
+
+# GSD planning artifacts — local-only project tracking (BRIEFs, PLANs,
+# SUMMARYs, UATs, codebase analysis). Not part of the shipped plugin.
+.planning/
+
+# Claude / GSD agent worktrees and local tool state. Already excluded from
+# eslint globalIgnores; mirror here for git.
+.claude/
+
+# Build / debug logs
+*.log
