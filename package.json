@@ -4,6 +4,14 @@
 	"description": "Bidirectional sync between an Obsidian vault and the Huma dashboard's collaborative editor.",
 	"main": "main.js",
 	"type": "module",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/Huma-Energy/huma-obsidian-upload.git"
+	},
+	"homepage": "https://github.com/Huma-Energy/huma-obsidian-upload#readme",
+	"bugs": {
+		"url": "https://github.com/Huma-Energy/huma-obsidian-upload/issues"
+	},
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
 		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
