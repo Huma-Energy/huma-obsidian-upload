@@ -17,6 +17,7 @@ import {
 } from "./push-worker";
 import {
 	reconcile,
+	type DuplicateUuid,
 	type RenameLocalAction,
 	type StaleLocalDeleteAction,
 	type SyncAction,
@@ -50,8 +51,11 @@ export interface SyncRunResult {
 	audit: AuditEntry[];
 	conflicts: number;
 	stale: number;
+	duplicateUuids: DuplicateUuid[];
 	finishedAt: string;
 }
+
+export type { DuplicateUuid };
 
 export interface SyncEngineDeps {
 	api: VaultApiClient;
@@ -391,6 +395,7 @@ export class SyncEngine {
 				audit,
 				conflicts,
 				stale: stats.staleLocalDelete,
+				duplicateUuids,
 				finishedAt,
 			};
 		} catch (err) {

@@ -21,6 +21,8 @@ export interface AuditLogModalHooks {
 	hasStale?: () => boolean;
 	onResolveServerDeleted?: () => void;
 	hasServerDeleted?: () => boolean;
+	onResolveDuplicate?: () => void;
+	hasDuplicate?: () => boolean;
 }
 
 export class AuditLogModal extends Modal {
@@ -128,14 +130,21 @@ export class AuditLogModal extends Modal {
 		const canResolveServerDeleted =
 			!!this.hooks.onResolveServerDeleted &&
 			(this.hooks.hasServerDeleted?.() ?? false);
+		const canResolveDuplicate =
+			!!this.hooks.onResolveDuplicate &&
+			(this.hooks.hasDuplicate?.() ?? false);
 		for (const e of [...this.entries].reverse()) {
 			const sev = severityFor(e.event);
 			const isResolvableStale =
 				e.event === "stale_local_delete" && canResolveStale;
 			const isResolvableServerDeleted =
 				e.event === "server_deleted" && canResolveServerDeleted;
+			const isResolvableDuplicate =
+				e.event === "duplicate_uuid" && canResolveDuplicate;
 			const isClickable =
-				isResolvableStale || isResolvableServerDeleted;
+				isResolvableStale ||
+				isResolvableServerDeleted ||
+				isResolvableDuplicate;
 			const row = list.createDiv({
 				cls: `huma-audit-row huma-severity-${sev}${
 					isClickable ? " huma-audit-row--clickable" : ""
@@ -157,7 +166,9 @@ export class AuditLogModal extends Modal {
 				row.setAttr("tabindex", "0");
 				const ariaLabel = isResolvableStale
 					? `Resolve stale deletion for ${e.path}`
-					: `Review server-deleted file ${e.path}`;
+					: isResolvableServerDeleted
+						? `Review server-deleted file ${e.path}`
+						: `Resolve duplicate UUID for ${e.path}`;
 				row.setAttr("aria-label", ariaLabel);
 				const open = (): void => {
 					this.close();
@@ -165,6 +176,8 @@ export class AuditLogModal extends Modal {
 						this.hooks.onResolveStale?.();
 					} else if (isResolvableServerDeleted) {
 						this.hooks.onResolveServerDeleted?.();
+					} else if (isResolvableDuplicate) {
+						this.hooks.onResolveDuplicate?.();
 					}
 				};
 				row.addEventListener("click", open);

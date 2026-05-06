@@ -113,6 +113,7 @@ export type AuditEvent =
 	| "server_deleted"
 	| "stale_local_delete"
 	| "duplicate_uuid"
+	| "duplicate_uuid_resolved"
 	| "token_scan_warning"
 	| "auth_error";
 

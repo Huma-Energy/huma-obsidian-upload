@@ -23,8 +23,13 @@ import {
 	ServerDeletedResolutionModal,
 	type ServerDeletedEntryView,
 } from "./ui/server-deleted-resolution-modal";
+import {
+	DuplicateUuidResolutionModal,
+	type DuplicateUuidEntryView,
+} from "./ui/duplicate-uuid-resolution-modal";
 import { MobileStatusModal } from "./ui/mobile-status-modal";
 import type {
+	DuplicateUuid,
 	ServerDeletedAction,
 	StaleLocalDeleteAction,
 } from "./sync/reconcile";
@@ -58,6 +63,7 @@ export default class HumaVaultSyncPlugin extends Plugin {
 	private currentState: EngineState | { kind: "signed-out" } = { kind: "signed-out" };
 	private readonly selfWriteTracker = new SelfWriteTracker();
 	private lastStaleEntries: readonly StaleLocalDeleteAction[] = [];
+	private lastDuplicateUuids: readonly DuplicateUuid[] = [];
 
 	async onload(): Promise<void> {
 		await this.loadAll();
@@ -81,11 +87,19 @@ export default class HumaVaultSyncPlugin extends Plugin {
 					const onlyStale =
 						state.staleCount > 0 &&
 						state.conflictCount === 0 &&
+						state.serverDeletedCount === 0 &&
+						state.duplicateCount === 0;
+					const onlyDuplicate =
+						state.duplicateCount > 0 &&
+						state.conflictCount === 0 &&
+						state.staleCount === 0 &&
 						state.serverDeletedCount === 0;
 					if (onlyServerDeleted) {
 						this.openServerDeletedResolutionModal();
 					} else if (onlyStale) {
 						this.openStaleResolutionModal();
+					} else if (onlyDuplicate) {
+						this.openDuplicateUuidResolutionModal();
 					} else {
 						this.openAuditLog();
 					}
@@ -454,6 +468,16 @@ export default class HumaVaultSyncPlugin extends Plugin {
 						a.kind === "server-deleted",
 				),
 			);
+			// Hide duplicates whose UUID is already on the server-deleted
+			// pending list — those resolve through the server-deleted modal,
+			// and showing them in both surfaces would let the user mutate
+			// frontmatter for a UUID the engine is about to drop anyway.
+			const tombstoned = new Set(
+				this.data.pendingServerDeletes.map((p) => p.id),
+			);
+			this.lastDuplicateUuids = result.duplicateUuids.filter(
+				(d) => !tombstoned.has(d.uuid),
+			);
 			this.renderStatusBarPostSync();
 		} catch (err) {
 			new Notice(classifyErrorForUser(err), 6000);
@@ -640,6 +664,9 @@ export default class HumaVaultSyncPlugin extends Plugin {
 					this.openServerDeletedResolutionModal(),
 				hasServerDeleted: () =>
 					this.countPendingServerDeletes() > 0,
+				onResolveDuplicate: () =>
+					this.openDuplicateUuidResolutionModal(),
+				hasDuplicate: () => this.lastDuplicateUuids.length > 0,
 			},
 		).open();
 	}
@@ -756,6 +783,102 @@ export default class HumaVaultSyncPlugin extends Plugin {
 			deleteLocally: (id) => this.deleteServerDeletedFile(id),
 			keepLocally: (id) => this.keepServerDeletedFile(id),
 		}).open();
+	}
+
+	openDuplicateUuidResolutionModal(): void {
+		new DuplicateUuidResolutionModal(this.app, {
+			getEntries: () => this.viewDuplicateUuidEntries(),
+			keepUuid: (uuid, keepPath) =>
+				this.resolveDuplicateUuid(uuid, keepPath),
+		}).open();
+	}
+
+	private viewDuplicateUuidEntries(): DuplicateUuidEntryView[] {
+		// Auto-prune sets where one of the listed paths no longer exists on
+		// disk (user manually deleted between cycles) — if only one path
+		// survives, the duplicate is degenerate and the next reconcile will
+		// drop it. Render only sets that still have ≥2 surviving files.
+		const visible: DuplicateUuidEntryView[] = [];
+		for (const d of this.lastDuplicateUuids) {
+			const surviving = d.paths.filter((p) => {
+				const f = this.app.vault.getAbstractFileByPath(p);
+				return f instanceof TFile;
+			});
+			if (surviving.length >= 2) {
+				visible.push({ uuid: d.uuid, paths: surviving });
+			}
+		}
+		return visible;
+	}
+
+	async resolveDuplicateUuid(uuid: string, keepPath: string): Promise<void> {
+		const entry = this.lastDuplicateUuids.find((d) => d.uuid === uuid);
+		if (!entry) {
+			throw new Error("Duplicate set not found.");
+		}
+		if (!entry.paths.includes(keepPath)) {
+			throw new Error("Keep path is not part of this duplicate set.");
+		}
+		// Wait for any inflight polling cycle. Without this guard, a
+		// concurrent cycle's end-of-cycle saveManifest could race with our
+		// frontmatter mutations and write a stale view of the world.
+		// See restoreStaleDeletion for the same pattern.
+		if (this.engine) await this.engine.awaitInflight();
+
+		const stripped: string[] = [];
+		const errors: { path: string; message: string }[] = [];
+		for (const path of entry.paths) {
+			if (path === keepPath) continue;
+			const file = this.app.vault.getAbstractFileByPath(path);
+			if (!(file instanceof TFile)) {
+				// Non-fatal: file vanished between modal-open and click.
+				continue;
+			}
+			try {
+				await this.app.fileManager.processFrontMatter(
+					file,
+					(fm: Record<string, unknown>) => {
+						delete fm.huma_uuid;
+					},
+				);
+				stripped.push(path);
+			} catch (err) {
+				errors.push({
+					path,
+					message: err instanceof Error ? err.message : String(err),
+				});
+			}
+		}
+
+		if (stripped.length > 0) {
+			const now = new Date().toISOString();
+			pushAuditMany(
+				this.data.auditRing,
+				stripped.map((path) => ({
+					timestamp: now,
+					event: "duplicate_uuid_resolved" as const,
+					path,
+					id: uuid,
+					detail: `kept ${keepPath}`,
+				})),
+			);
+			await this.saveAll();
+		}
+
+		// Drop the resolved set from cache so a re-render of the modal
+		// excludes it. The next runFullSync re-derives the canonical state.
+		this.lastDuplicateUuids = this.lastDuplicateUuids.filter(
+			(d) => d.uuid !== uuid,
+		);
+		this.renderStatusBarPostSync();
+		void this.runFullSync();
+
+		if (errors.length > 0) {
+			const first = errors[0]!;
+			throw new Error(
+				`Stripped ${stripped.length} of ${entry.paths.length - 1} file(s); failed on ${first.path}: ${first.message}`,
+			);
+		}
 	}
 
 	private viewServerDeletedEntries(): ServerDeletedEntryView[] {

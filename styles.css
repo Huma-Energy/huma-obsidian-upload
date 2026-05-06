@@ -217,6 +217,22 @@
 	flex-shrink: 0;
 }
 
+.huma-duplicate-set {
+	display: flex;
+	flex-direction: column;
+	gap: 0.3em;
+	padding: 0.5em 0.6em;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	background-color: var(--background-primary-alt);
+}
+
+.huma-duplicate-set-id {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	margin-bottom: 0.2em;
+}
+
 .huma-signin-tip {
 	color: var(--text-muted);
 	font-size: var(--font-ui-small);

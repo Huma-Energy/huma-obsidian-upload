@@ -4,6 +4,16 @@ All notable changes to **Huma Vault Sync** will be documented here. The format f
 
 ## [Unreleased]
 
+### Added
+
+- **Duplicate-UUID resolution UI** (`src/ui/duplicate-uuid-resolution-modal.ts`). When two or more vault files share the same `huma_uuid`, sync pauses for that UUID. The new modal lists each duplicate set and exposes per-row **Keep this one** — picking a path strips `huma_uuid` from the others via `processFrontMatter`, so they become untracked locals and re-sync as new files on the next cycle. Surfaced via status-bar click when only duplicates are outstanding, or by clicking a `duplicate_uuid` row in the audit log. `resolveDuplicateUuid` awaits any inflight cycle before mutating frontmatter to avoid a `saveManifest` race (mirrors `restoreStaleDeletion`).
+- **`duplicate_uuid_resolved` audit event** (severity `info`). Emitted once per stripped file with `detail: kept <keep-path>`. Records the resolve action in the audit trail without re-using the `path_change` event semantics (path doesn't actually change on a frontmatter strip).
+- `SyncRunResult` now exposes `duplicateUuids: DuplicateUuid[]`. Previously the field was computed inside `runOnce` but never returned.
+
+### Changed
+
+- Status-bar click router gains an `onlyDuplicate` branch that opens the duplicate-resolution modal directly. The existing `onlyStale` branch is tightened to require zero outstanding duplicates so the user always sees every category.
+
 ## [0.1.1] — 2026-05-02
 
 ### Added
