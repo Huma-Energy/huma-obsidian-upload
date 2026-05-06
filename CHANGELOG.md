@@ -4,15 +4,19 @@ All notable changes to **Huma Vault Sync** will be documented here. The format f
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-05-06
+
 ### Added
 
 - **Duplicate-UUID resolution UI** (`src/ui/duplicate-uuid-resolution-modal.ts`). When two or more vault files share the same `huma_uuid`, sync pauses for that UUID. The new modal lists each duplicate set and exposes per-row **Keep this one** — picking a path strips `huma_uuid` from the others via `processFrontMatter`, so they become untracked locals and re-sync as new files on the next cycle. Surfaced via status-bar click when only duplicates are outstanding, or by clicking a `duplicate_uuid` row in the audit log. `resolveDuplicateUuid` awaits any inflight cycle before mutating frontmatter to avoid a `saveManifest` race (mirrors `restoreStaleDeletion`).
 - **`duplicate_uuid_resolved` audit event** (severity `info`). Emitted once per stripped file with `detail: kept <keep-path>`. Records the resolve action in the audit trail without re-using the `path_change` event semantics (path doesn't actually change on a frontmatter strip).
 - `SyncRunResult` now exposes `duplicateUuids: DuplicateUuid[]`. Previously the field was computed inside `runOnce` but never returned.
+- `package.json` now declares `repository`, `homepage`, and `bugs` URLs pointing at `Huma-Energy/huma-obsidian-upload`.
 
 ### Changed
 
 - Status-bar click router gains an `onlyDuplicate` branch that opens the duplicate-resolution modal directly. The existing `onlyStale` branch is tightened to require zero outstanding duplicates so the user always sees every category.
+- Repo polish for public release: new prismatic icon at `obsidian-huma-icon.png` (replaces `assets/icon.png`); README accuracy fixes (Windows added to platform list, mobile ribbon-modal description corrected for the conditional **Resolve conflicts** button, command palette format corrected to `Huma Vault Sync: Resolve conflicts`, misleading `huma.energy` URL example dropped).
 
 ## [0.1.1] — 2026-05-02
 
