@@ -73,7 +73,7 @@ export interface ManifestRecord {
 }
 
 export const DEFAULT_SETTINGS: HumaSettings = {
-	serverBaseUrl: "https://humagreenfield.netlify.app",
+	serverBaseUrl: "https://humatopia.ai",
 	syncIntervalSeconds: 30,
 	excludedFolders: [],
 };
