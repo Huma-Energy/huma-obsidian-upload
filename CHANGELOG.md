@@ -4,6 +4,12 @@ All notable changes to **Huma Vault Sync** will be documented here. The format f
 
 ## [Unreleased]
 
+## [0.1.3] — 2026-05-13
+
+### Changed
+
+- `DEFAULT_SETTINGS.serverBaseUrl` and the settings-tab placeholder now point at `https://humatopia.ai` (the post-migration host). Existing users with a configured URL are unaffected; fresh installs in new vaults no longer default to the pre-migration `humagreenfield.netlify.app`.
+
 ## [0.1.2] — 2026-05-06
 
 ### Added
