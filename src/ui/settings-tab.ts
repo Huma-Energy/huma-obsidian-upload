@@ -34,7 +34,7 @@ export class HumaSettingsTab extends PluginSettingTab {
 				"This is where your notes will sync to. Most users should leave this as is. Change only if you've been given a custom server URL.",
 			)
 			.addText((text) =>
-				text.setPlaceholder("https://humagreenfield.netlify.app")
+				text.setPlaceholder("https://humatopia.ai")
 					.setValue(this.plugin.data.settings.serverBaseUrl)
 					.onChange(async (value) => {
 						const trimmed = value.trim().replace(/\/+$/, "");
