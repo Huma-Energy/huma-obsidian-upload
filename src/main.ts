@@ -39,8 +39,10 @@ import { normalizeExcludedFolders } from "./sync/exclusion";
 import { runPullWorker } from "./sync/pull-worker";
 import { scanVaultForTokens } from "./security/vault-token-scan";
 import { pushAuditMany } from "./audit/ring";
-import { parseFile } from "./sync/frontmatter";
+import { parseFile, replaceFileBody, stringifyFile } from "./sync/frontmatter";
 import { sha256Hex } from "./sync/hash";
+import { annotationSummary, detectHumaAnnotations } from "./annotations/detect";
+import { lintForOkf, withOkfType } from "./okf/lint";
 import { SelfWriteTracker } from "./sync/self-write-tracker";
 import { isUnrecoverableAuthError } from "./sync/token-manager";
 import type { AuditEntry } from "./types";
@@ -634,6 +636,79 @@ export default class HumaVaultSyncPlugin extends Plugin {
 			name: "Reset local sync state",
 			callback: () => void this.resetLocalState(),
 		});
+		this.addCommand({
+			id: "show-note-annotations",
+			name: "Show web annotations in this note",
+			checkCallback: (checking: boolean) => {
+				const file = this.app.workspace.getActiveFile();
+				if (!file || file.extension !== "md") return false;
+				if (!checking) {
+					void this.showNoteAnnotations(file).catch((err) =>
+						new Notice(classifyErrorForUser(err), 6000),
+					);
+				}
+				return true;
+			},
+		});
+		this.addCommand({
+			id: "okf-lint-note",
+			// eslint-disable-next-line obsidianmd/ui/sentence-case -- "OKF" (Open Knowledge Format) is a proper-noun acronym
+			name: "Check this note for OKF fields",
+			checkCallback: (checking: boolean) => {
+				const file = this.app.workspace.getActiveFile();
+				if (!file || file.extension !== "md") return false;
+				if (!checking) {
+					void this.okfLintNote(file).catch((err) =>
+						new Notice(classifyErrorForUser(err), 6000),
+					);
+				}
+				return true;
+			},
+		});
+	}
+
+	// Advisory surface for Phase 3: report the web-authored comments/mentions a
+	// note carries (read-only in Obsidian) and warn that editing a commented
+	// passage may re-anchor or orphan its comment. Read-only — never writes.
+	private async showNoteAnnotations(file: TFile): Promise<void> {
+		const text = await this.app.vault.read(file);
+		const { body } = parseFile(text);
+		const annotations = detectHumaAnnotations(body);
+		if (!annotations.hasAny) {
+			new Notice("Huma: no web comments or mentions in this note.", 4000);
+			return;
+		}
+		new Notice(`Huma: ${annotationSummary(annotations)}`, 8000);
+	}
+
+	// Opt-in, per-item OKF lint for Phase 4. Adds a `type` frontmatter key when
+	// missing (a single reversible edit, no bulk rewrite) and flags index.md
+	// frontmatter collisions for the user to review. Never converts wikilinks.
+	private async okfLintNote(file: TFile): Promise<void> {
+		const text = await this.app.vault.read(file);
+		const { frontmatter, body } = parseFile(text);
+		const result = lintForOkf({ path: file.path, frontmatter });
+
+		if (result.needsType) {
+			const next = withOkfType(frontmatter, result.suggestedType);
+			await replaceFileBody(this.app, file, stringifyFile(body, next));
+		}
+
+		const done: string[] = [];
+		if (result.needsType) {
+			done.push(`added \`type: ${result.suggestedType}\` (edit or undo to change)`);
+		}
+		if (result.indexCollision) {
+			done.push(
+				"index.md is OKF-reserved — review its frontmatter before exporting",
+			);
+		}
+		new Notice(
+			done.length > 0
+				? `Huma OKF: ${done.join("; ")}.`
+				: "Huma OKF: this note already satisfies the OKF checks.",
+			8000,
+		);
 	}
 
 
