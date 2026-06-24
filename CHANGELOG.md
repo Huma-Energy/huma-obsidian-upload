@@ -4,6 +4,8 @@ All notable changes to **Huma Vault Sync** will be documented here. The format f
 
 ## [Unreleased]
 
+## [0.1.4] — 2026-06-24
+
 ### Added
 
 - **Web-annotation advisory** (`src/annotations/detect.ts`; command **Show web annotations in this note**). Detects the web-authored comments a pulled note carries (`[^c-…]` footnote definitions under a `# Comments` section) and `huma://user/` mentions, and reports them via a Notice — including that they are read-only in Obsidian for v1 and that editing a commented passage may re-anchor or orphan its comment on the server. Pure, unit-tested detector; counts footnote definitions (not inline refs) so an unanchored thread still surfaces, and a user's own `# Comments` heading with no footnote defs is not a false positive.
