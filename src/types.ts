@@ -115,7 +115,13 @@ export type AuditEvent =
 	| "duplicate_uuid"
 	| "duplicate_uuid_resolved"
 	| "token_scan_warning"
-	| "auth_error";
+	| "auth_error"
+	| "share_visibility_changed"
+	| "share_tenant_role_changed"
+	| "share_collaborator_added"
+	| "share_collaborator_removed"
+	| "share_collaborator_role_changed"
+	| "share_stopped";
 
 export interface AuditEntry {
 	timestamp: string;
@@ -123,4 +129,53 @@ export interface AuditEntry {
 	path: string;
 	id: string | null;
 	detail?: string;
+}
+
+// ---- Sharing (/api/vault/share) ----
+// Wire shapes for the bearer-authed document-sharing endpoint. Visibility uses
+// the server's enum values (`tenant` = "Organization" in the UI); the plugin
+// maps to user-facing labels at the edges. `owner` is never an assignable
+// collaborator/tenant role — only `callerRole` can be "owner".
+
+export type ShareVisibility = "private" | "tenant" | "public";
+export type ShareAssignableRole = "editor" | "commenter" | "viewer";
+export type ShareCallerRole = ShareAssignableRole | "owner";
+
+export interface ShareUser {
+	zitadelSub: string;
+	email: string | null;
+	name: string | null;
+	avatarUrl: string | null;
+}
+
+export interface ShareCollaborator {
+	userId: string;
+	role: ShareAssignableRole;
+	addedAt: string;
+	user: ShareUser | null;
+}
+
+export interface ShareStateResponse {
+	ok: true;
+	isOwner: boolean;
+	callerRole: ShareCallerRole;
+	ownerId: string | null;
+	owner: ShareUser | null;
+	tenantId: string | null;
+	visibility: ShareVisibility;
+	publicSlug: string | null;
+	tenantRole: ShareAssignableRole;
+	collaborators: ShareCollaborator[];
+}
+
+export interface ShareVisibilityResponse {
+	ok: true;
+	visibility: ShareVisibility;
+	indexable: boolean;
+	publicSlug: string | null;
+}
+
+export interface ShareSearchUsersResponse {
+	ok: true;
+	results: ShareUser[];
 }

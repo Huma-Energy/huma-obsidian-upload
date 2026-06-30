@@ -28,6 +28,7 @@ import {
 	type DuplicateUuidEntryView,
 } from "./ui/duplicate-uuid-resolution-modal";
 import { MobileStatusModal } from "./ui/mobile-status-modal";
+import { ShareModal, type ShareModalDeps } from "./ui/share-modal";
 import type {
 	DuplicateUuid,
 	ServerDeletedAction,
@@ -39,13 +40,24 @@ import { normalizeExcludedFolders } from "./sync/exclusion";
 import { runPullWorker } from "./sync/pull-worker";
 import { scanVaultForTokens } from "./security/vault-token-scan";
 import { pushAuditMany } from "./audit/ring";
-import { parseFile, replaceFileBody, stringifyFile } from "./sync/frontmatter";
+import {
+	parseFile,
+	readHumaUuid,
+	replaceFileBody,
+	stringifyFile,
+} from "./sync/frontmatter";
 import { sha256Hex } from "./sync/hash";
 import { annotationSummary, detectHumaAnnotations } from "./annotations/detect";
 import { lintForOkf, withOkfType } from "./okf/lint";
 import { SelfWriteTracker } from "./sync/self-write-tracker";
 import { isUnrecoverableAuthError } from "./sync/token-manager";
-import type { AuditEntry } from "./types";
+import type {
+	AuditEntry,
+	AuditEvent,
+	ShareAssignableRole,
+	ShareStateResponse,
+	ShareVisibility,
+} from "./types";
 
 const PLUGIN_USER_AGENT = "Huma Obsidian Plugin v0.1.0";
 const REVOKE_PATH = "/api/vault/auth/revoke";
@@ -127,6 +139,7 @@ export default class HumaVaultSyncPlugin extends Plugin {
 
 		this.addSettingTab(new HumaSettingsTab(this.app, this));
 		this.registerCommands();
+		this.registerShareMenu();
 
 		// Vault event handlers must register inside onLayoutReady — see
 		// "Optimize plugin load time" docs: at cold start Obsidian fires
@@ -637,6 +650,22 @@ export default class HumaVaultSyncPlugin extends Plugin {
 			callback: () => void this.resetLocalState(),
 		});
 		this.addCommand({
+			id: "share-note",
+			name: "Share this note",
+			checkCallback: (checking: boolean) => {
+				const file = this.app.workspace.getActiveFile();
+				if (!file || file.extension !== "md" || !this.data.tokens) {
+					return false;
+				}
+				if (!checking) {
+					void this.openShareForFile(file).catch((err) =>
+						new Notice(classifyErrorForUser(err), 6000),
+					);
+				}
+				return true;
+			},
+		});
+		this.addCommand({
 			id: "show-note-annotations",
 			name: "Show web annotations in this note",
 			checkCallback: (checking: boolean) => {
@@ -711,6 +740,162 @@ export default class HumaVaultSyncPlugin extends Plugin {
 		);
 	}
 
+	// Adds "Share on Huma…" to the file context menu for markdown files when
+	// signed in. Mirrors the "Share this note" command; both open the modal.
+	private registerShareMenu(): void {
+		this.registerEvent(
+			this.app.workspace.on("file-menu", (menu, file) => {
+				if (!(file instanceof TFile) || file.extension !== "md") return;
+				if (!this.data.tokens) return;
+				menu.addItem((item) =>
+					item
+						// eslint-disable-next-line obsidianmd/ui/sentence-case -- "Huma" is a proper-noun brand name
+						.setTitle("Share on Huma…")
+						.setIcon("share-2")
+						.onClick(() =>
+							void this.openShareForFile(file).catch((err) =>
+								new Notice(classifyErrorForUser(err), 6000),
+							),
+						),
+				);
+			}),
+		);
+	}
+
+	// Resolves the note's huma_uuid (auto-pushing it first if unsynced, the
+	// agreed UX), fetches its sharing state, primes the frontmatter mirror, and
+	// opens the modal. Owner-only editing is enforced server-side and reflected
+	// read-only in the modal for non-owners.
+	async openShareForFile(file: TFile): Promise<void> {
+		if (!this.vaultApi) {
+			new Notice("Huma: sign in to share notes.", 5000);
+			return;
+		}
+		const uuid = await this.resolveOrMintUuid(file);
+		if (!uuid) return;
+		const state = await this.vaultApi.getShareState(uuid);
+		await this.updateShareMirror(file, state);
+		new ShareModal(this.app, this.buildShareDeps(file, uuid, state)).open();
+	}
+
+	// Returns the note's huma_uuid, minting one via a sync push if the note has
+	// never synced. Returns null (after a Notice) when the note still can't be
+	// linked — e.g. it lives in an excluded folder, or the push failed.
+	private async resolveOrMintUuid(file: TFile): Promise<string | null> {
+		const existing = readHumaUuid(parseFile(await this.app.vault.read(file)).frontmatter);
+		if (existing) return existing;
+
+		new Notice("Huma: syncing this note to enable sharing…", 4000);
+		await this.runFullSync();
+
+		const after = readHumaUuid(parseFile(await this.app.vault.read(file)).frontmatter);
+		if (!after) {
+			new Notice(
+				"Huma: couldn't sync this note yet. It may be in an excluded folder, or sync failed — try again after a successful sync.",
+				8000,
+			);
+			return null;
+		}
+		return after;
+	}
+
+	// Builds the modal's live-apply callbacks. Each mutator calls the bearer
+	// share endpoint, re-reads server truth, updates the frontmatter mirror, and
+	// records a local audit entry — returning the fresh state for re-render.
+	private buildShareDeps(
+		file: TFile,
+		uuid: string,
+		initialState: ShareStateResponse,
+	): ShareModalDeps {
+		const api = this.vaultApi!;
+		const refresh = async (
+			event: AuditEvent,
+			detail: string | null,
+		): Promise<ShareStateResponse> => {
+			const state = await api.getShareState(uuid);
+			await this.updateShareMirror(file, state);
+			this.appendShareAudit(event, file.path, uuid, detail);
+			return state;
+		};
+		return {
+			noteTitle: file.basename,
+			serverBaseUrl: this.data.settings.serverBaseUrl,
+			initialState,
+			setVisibility: async (v: ShareVisibility) => {
+				await api.setVisibility(uuid, v);
+				return refresh("share_visibility_changed", v);
+			},
+			setTenantRole: async (r: ShareAssignableRole) => {
+				await api.setTenantRole(uuid, r);
+				return refresh("share_tenant_role_changed", r);
+			},
+			addCollaborator: async (identifier: string, role: ShareAssignableRole) => {
+				await api.addCollaborator(uuid, identifier, role);
+				return refresh("share_collaborator_added", `${identifier}:${role}`);
+			},
+			updateCollaboratorRole: async (userId: string, role: ShareAssignableRole) => {
+				await api.updateCollaboratorRole(uuid, userId, role);
+				return refresh("share_collaborator_role_changed", `${userId}:${role}`);
+			},
+			removeCollaborator: async (userId: string) => {
+				await api.removeCollaborator(uuid, userId);
+				return refresh("share_collaborator_removed", userId);
+			},
+			stopSharing: async () => {
+				await api.stopSharing(uuid);
+				return refresh("share_stopped", null);
+			},
+			searchUsers: async (q: string) => (await api.searchUsers(q)).results,
+		};
+	}
+
+	// Writes the read-only sharing mirror into frontmatter (huma_visibility as a
+	// user-facing word, huma_shared_with count, huma_public_url when public).
+	// Body is untouched, so the body hash is unchanged — recorded on the tracker
+	// first so the resulting modify event doesn't trigger a spurious sync.
+	private async updateShareMirror(
+		file: TFile,
+		state: ShareStateResponse,
+	): Promise<void> {
+		const { body } = parseFile(await this.app.vault.read(file));
+		const hash = await sha256Hex(body);
+		this.selfWriteTracker.record(file.path, hash);
+
+		const visibilityWord =
+			state.visibility === "tenant" ? "organization" : state.visibility;
+		const publicUrl =
+			state.visibility === "public" && state.publicSlug
+				? `${this.data.settings.serverBaseUrl.replace(/\/+$/, "")}/documents/public/${state.publicSlug}`
+				: null;
+
+		await this.app.fileManager.processFrontMatter(
+			file,
+			(fm: Record<string, unknown>) => {
+				fm["huma_visibility"] = visibilityWord;
+				fm["huma_shared_with"] = state.collaborators.length;
+				if (publicUrl) fm["huma_public_url"] = publicUrl;
+				else delete fm["huma_public_url"];
+			},
+		);
+	}
+
+	private appendShareAudit(
+		event: AuditEvent,
+		path: string,
+		id: string,
+		detail: string | null,
+	): void {
+		pushAuditMany(this.data.auditRing, [
+			{
+				timestamp: new Date().toISOString(),
+				event,
+				path,
+				id,
+				detail: detail ?? undefined,
+			},
+		]);
+		void this.saveAll();
+	}
 
 	private async openNextConflict(): Promise<void> {
 		const conflicts = listConflictFiles(this.app);
