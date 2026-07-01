@@ -4,6 +4,12 @@ All notable changes to **Huma Vault Sync** will be documented here. The format f
 
 ## [Unreleased]
 
+## [0.1.6] — 2026-07-01
+
+### Changed
+
+- Removed the **Stop sharing** button from the Share modal. It sat where a modal's OK/Close button usually is — an accidental-destructive-click risk — and was convenience-only: set visibility to **Private** and remove collaborators with the per-row **×** to achieve the same result.
+
 ## [0.1.5] — 2026-07-01
 
 ### Added
