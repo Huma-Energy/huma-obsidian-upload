@@ -1,4 +1,8 @@
-import type { AuditEntry } from "./types";
+import type {
+	AuditEntry,
+	ShareAssignableRole,
+	ShareVisibility,
+} from "./types";
 
 export interface StoredTokens {
 	access_token: string;
@@ -36,6 +40,41 @@ export interface HumaPluginData {
 	// clear this (returning users don't re-onboard); resetLocalState
 	// DOES clear it (full reset means re-onboard); disable preserves it.
 	welcomeSeenAt: string | null;
+	// Standing folder-share rules. Each rule is a canonical sharing config
+	// applied by fan-out to the synced notes under a vault folder. Passive
+	// application (post-sync) is add-only and touches only notes not yet in
+	// `coveredUuids` (i.e. new/newly-synced files); a deliberate rule edit
+	// re-applies to every note under the folder. Per-device state — folders
+	// are not a server entity, so nothing persists a "shared folder"
+	// server-side. See sync/folder-share.ts.
+	folderShares: FolderShareRule[];
+}
+
+export interface FolderShareCollaborator {
+	// zitadelSub of the collaborator (the id the share endpoint keys on).
+	userId: string;
+	role: ShareAssignableRole;
+}
+
+export interface FolderShareRule {
+	// Vault-relative folder path, normalized (no leading/trailing slash).
+	// The empty string denotes the vault root (every note).
+	folderPath: string;
+	visibility: ShareVisibility;
+	// The role granted to the whole organization while visibility="tenant".
+	// Ignored for private/public, but retained so toggling back to tenant
+	// restores the last choice.
+	tenantRole: ShareAssignableRole;
+	collaborators: FolderShareCollaborator[];
+	// ISO timestamp, bumped on every deliberate edit. A bump conceptually
+	// invalidates `coveredUuids` (the editor clears it) so the edit
+	// re-propagates to all notes under the folder.
+	updatedAt: string;
+	// UUIDs of notes the rule has already been applied to at the current
+	// `updatedAt`. Passive post-sync application skips these and only touches
+	// synced notes NOT listed here, so already-shared notes aren't re-mutated
+	// every cycle and per-note customizations survive.
+	coveredUuids: string[];
 }
 
 export interface PendingServerDelete {
@@ -90,4 +129,5 @@ export const DEFAULT_PLUGIN_DATA: HumaPluginData = {
 	ignoredStaleIds: [],
 	pendingServerDeletes: [],
 	welcomeSeenAt: null,
+	folderShares: [],
 };

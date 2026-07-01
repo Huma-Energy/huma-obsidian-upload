@@ -4,6 +4,7 @@ import {
 	SYNC_INTERVAL_MIN_SECONDS,
 } from "../settings";
 import { normalizeExcludedFolders } from "../sync/exclusion";
+import { VISIBILITY_LABELS, confirm } from "./share-common";
 import type HumaVaultSyncPlugin from "../main";
 
 export class HumaSettingsTab extends PluginSettingTab {
@@ -23,8 +24,48 @@ export class HumaSettingsTab extends PluginSettingTab {
 		this.renderServerUrlSection(containerEl);
 		this.renderSyncIntervalSection(containerEl);
 		this.renderExclusionsSection(containerEl);
+		this.renderFolderSharesSection(containerEl);
 		this.renderObsidianSyncSection(containerEl);
 		this.renderSyncLogSection(containerEl);
+	}
+
+	// Lists the standing folder-share rules with Edit (reopens the rule editor)
+	// and Delete. Deleting stops auto-sharing new notes but never revokes
+	// existing access. Rules are created from a folder's context menu.
+	private renderFolderSharesSection(containerEl: HTMLElement): void {
+		const rules = this.plugin.data.folderShares;
+		if (rules.length === 0) return;
+		new Setting(containerEl).setName("Shared folders").setHeading();
+		for (const rule of rules) {
+			const label = rule.folderPath === "" ? "vault root" : rule.folderPath;
+			const people = rule.collaborators.length;
+			const desc =
+				VISIBILITY_LABELS[rule.visibility] +
+				(people > 0
+					? ` · ${people} ${people === 1 ? "person" : "people"}`
+					: "");
+			const setting = new Setting(containerEl).setName(label).setDesc(desc);
+			setting.addButton((btn) =>
+				btn.setButtonText("Edit").onClick(() => {
+					void this.plugin.openFolderShareByPath(rule.folderPath, label);
+				}),
+			);
+			setting.addButton((btn) =>
+				btn
+					.setButtonText("Delete")
+					.setWarning()
+					.onClick(async () => {
+						const ok = await confirm(this.app, {
+							title: "Delete folder rule?",
+							body: "New notes in this folder will no longer be shared automatically. Notes already shared keep their current access.",
+							cta: "Delete rule",
+						});
+						if (!ok) return;
+						await this.plugin.removeFolderShare(rule.folderPath);
+						this.display();
+					}),
+			);
+		}
 	}
 
 	private renderServerUrlSection(containerEl: HTMLElement): void {

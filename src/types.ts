@@ -121,7 +121,10 @@ export type AuditEvent =
 	| "share_collaborator_added"
 	| "share_collaborator_removed"
 	| "share_collaborator_role_changed"
-	| "share_stopped";
+	| "share_stopped"
+	| "share_folder_rule_saved"
+	| "share_folder_rule_deleted"
+	| "share_folder_rule_applied";
 
 export interface AuditEntry {
 	timestamp: string;

@@ -11,18 +11,7 @@ import type {
 	ShareUser,
 	ShareVisibility,
 } from "../types";
-
-const VISIBILITY_LABELS: Record<ShareVisibility, string> = {
-	private: "Private",
-	tenant: "Organization",
-	public: "Public",
-};
-
-const ROLE_LABELS: Record<ShareAssignableRole, string> = {
-	editor: "Editor",
-	commenter: "Commenter",
-	viewer: "Viewer",
-};
+import { ROLE_LABELS, VISIBILITY_LABELS, userLabel } from "./share-common";
 
 // Deps return the refreshed state so the modal re-renders from server truth
 // after every mutation; the owner of these callbacks (main.ts) also updates
@@ -43,10 +32,6 @@ export interface ShareModalDeps {
 	): Promise<ShareStateResponse>;
 	removeCollaborator(userId: string): Promise<ShareStateResponse>;
 	searchUsers(q: string): Promise<ShareUser[]>;
-}
-
-function userLabel(user: ShareUser | null, fallbackId: string): string {
-	return user?.name ?? user?.email ?? fallbackId;
 }
 
 export class ShareModal extends Modal {

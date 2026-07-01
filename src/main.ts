@@ -1,6 +1,7 @@
-import { Notice, Platform, Plugin, TFile, type TAbstractFile, type WorkspaceLeaf } from "obsidian";
+import { Notice, Platform, Plugin, TFile, TFolder, type TAbstractFile, type WorkspaceLeaf } from "obsidian";
 import {
 	DEFAULT_PLUGIN_DATA,
+	type FolderShareRule,
 	type HumaPluginData,
 	type ManifestRecord,
 	type StoredTokens,
@@ -29,6 +30,17 @@ import {
 } from "./ui/duplicate-uuid-resolution-modal";
 import { MobileStatusModal } from "./ui/mobile-status-modal";
 import { ShareModal, type ShareModalDeps } from "./ui/share-modal";
+import {
+	FolderShareModal,
+	type FolderApplySummary,
+	type FolderShareModalDeps,
+} from "./ui/folder-share-modal";
+import {
+	applyRuleToNotes,
+	notesGovernedByRule,
+	uncoveredSyncedUuids,
+	type FolderNote,
+} from "./sync/folder-share";
 import type {
 	DuplicateUuid,
 	ServerDeletedAction,
@@ -78,6 +90,9 @@ export default class HumaVaultSyncPlugin extends Plugin {
 	private readonly selfWriteTracker = new SelfWriteTracker();
 	private lastStaleEntries: readonly StaleLocalDeleteAction[] = [];
 	private lastDuplicateUuids: readonly DuplicateUuid[] = [];
+	// Set while a deliberate folder-rule apply runs its own sync, so the
+	// passive post-sync folder pass doesn't double-apply mid-flight.
+	private folderApplyInFlight = false;
 
 	async onload(): Promise<void> {
 		await this.loadAll();
@@ -494,6 +509,9 @@ export default class HumaVaultSyncPlugin extends Plugin {
 				(d) => !tombstoned.has(d.uuid),
 			);
 			this.renderStatusBarPostSync();
+			// Standing folder-share rules: apply to any newly-synced notes.
+			// Guarded + self-contained so it never fails the sync itself.
+			await this.applyFolderShareRules();
 		} catch (err) {
 			new Notice(classifyErrorForUser(err), 6000);
 			// Auth-class failures: TokenManager has already cleared stored
@@ -740,24 +758,44 @@ export default class HumaVaultSyncPlugin extends Plugin {
 		);
 	}
 
-	// Adds "Share on Huma…" to the file context menu for markdown files when
-	// signed in. Mirrors the "Share this note" command; both open the modal.
+	// Adds sharing entries to the file-explorer context menu when signed in:
+	// "Share on Huma…" for a markdown note (mirrors the "Share this note"
+	// command), and "Share folder on Huma…" for a folder (opens the standing
+	// folder-rule editor). The file-menu event fires for both TFile and
+	// TFolder targets.
 	private registerShareMenu(): void {
 		this.registerEvent(
 			this.app.workspace.on("file-menu", (menu, file) => {
-				if (!(file instanceof TFile) || file.extension !== "md") return;
 				if (!this.data.tokens) return;
-				menu.addItem((item) =>
-					item
-						// eslint-disable-next-line obsidianmd/ui/sentence-case -- "Huma" is a proper-noun brand name
-						.setTitle("Share on Huma…")
-						.setIcon("share-2")
-						.onClick(() =>
-							void this.openShareForFile(file).catch((err) =>
-								new Notice(classifyErrorForUser(err), 6000),
+				if (file instanceof TFile && file.extension === "md") {
+					menu.addItem((item) =>
+						item
+							// eslint-disable-next-line obsidianmd/ui/sentence-case -- "Huma" is a proper-noun brand name
+							.setTitle("Share on Huma…")
+							.setIcon("share-2")
+							.onClick(() =>
+								void this.openShareForFile(file).catch((err) =>
+									new Notice(classifyErrorForUser(err), 6000),
+								),
 							),
-						),
-				);
+					);
+				} else if (file instanceof TFolder) {
+					menu.addItem((item) =>
+						item
+							// eslint-disable-next-line obsidianmd/ui/sentence-case -- "Huma" is a proper-noun brand name
+							.setTitle("Share folder on Huma…")
+							.setIcon("share-2")
+							.onClick(() =>
+								void this.openFolderShareForFolder(file).catch(
+									(err) =>
+										new Notice(
+											classifyErrorForUser(err),
+											6000,
+										),
+								),
+							),
+					);
+				}
 			}),
 		);
 	}
@@ -891,6 +929,237 @@ export default class HumaVaultSyncPlugin extends Plugin {
 			},
 		]);
 		void this.saveAll();
+	}
+
+	async openFolderShareForFolder(folder: TFolder): Promise<void> {
+		await this.openFolderShareByPath(
+			normalizeFolderPath(folder.path),
+			folder.name || "vault root",
+		);
+	}
+
+	// Opens the folder-rule editor for a vault folder path. Builds the working
+	// rule from any existing saved rule (else a private default) and the
+	// current note counts the rule governs (respecting nested-rule precedence +
+	// exclusions), then hands the modal callbacks for apply/delete. Path-based
+	// so the settings tab can reopen a rule whose folder no longer exists.
+	async openFolderShareByPath(
+		folderPath: string,
+		folderName: string,
+	): Promise<void> {
+		if (!this.vaultApi) {
+			new Notice("Huma: sign in to share notes.", 5000);
+			return;
+		}
+		const notes = this.allFolderNotes();
+		const existing =
+			this.data.folderShares.find((r) => r.folderPath === folderPath) ??
+			null;
+		const initialRule = existing ?? defaultFolderRule(folderPath);
+		const governed = notesGovernedByRule(
+			notes,
+			initialRule,
+			this.data.folderShares,
+			this.data.settings.excludedFolders,
+		);
+		const deps: FolderShareModalDeps = {
+			folderName,
+			syncedCount: governed.filter((n) => n.uuid).length,
+			totalCount: governed.length,
+			initialRule,
+			isExisting: existing !== null,
+			searchUsers: async (q) =>
+				(await this.vaultApi!.searchUsers(q)).results,
+			onApply: (rule) => this.applyFolderRule(rule),
+			onDelete: () => this.deleteFolderRule(folderPath),
+		};
+		new FolderShareModal(this.app, deps).open();
+	}
+
+	// Deliberate apply of a (new or edited) folder rule. Pushes unsynced notes
+	// first so they gain a document, persists the rule as standing config with
+	// coverage cleared (this edit re-propagates to every governed note), then
+	// reconciles each owned note to match the rule. Non-owned notes are skipped;
+	// the result is summarized for the modal.
+	private async applyFolderRule(
+		rule: FolderShareRule,
+	): Promise<FolderApplySummary> {
+		if (!this.vaultApi) throw new Error("Sign in to share notes.");
+		this.folderApplyInFlight = true;
+		try {
+			// Q3: auto-push so unsynced notes under the folder gain documents.
+			await this.runFullSync();
+
+			const persisted: FolderShareRule = {
+				folderPath: rule.folderPath,
+				visibility: rule.visibility,
+				tenantRole: rule.tenantRole,
+				collaborators: rule.collaborators,
+				updatedAt: new Date().toISOString(),
+				coveredUuids: [],
+			};
+			this.upsertFolderRule(persisted);
+			await this.saveAll();
+
+			const governed = notesGovernedByRule(
+				this.allFolderNotes(),
+				persisted,
+				this.data.folderShares,
+				this.data.settings.excludedFolders,
+			);
+			const uuidToPath = new Map<string, string>();
+			for (const n of governed) if (n.uuid) uuidToPath.set(n.uuid, n.path);
+			const syncedUuids = [...uuidToPath.keys()];
+
+			let applied = 0;
+			let skippedNotOwner = 0;
+			let errors = 0;
+			const results = await applyRuleToNotes(
+				this.vaultApi,
+				syncedUuids,
+				persisted,
+				"reconcile",
+			);
+			for (const r of results) {
+				if (r.status === "applied") {
+					applied++;
+					persisted.coveredUuids.push(r.uuid);
+					const path = uuidToPath.get(r.uuid);
+					if (r.finalState && path) {
+						const f = this.app.vault.getAbstractFileByPath(path);
+						if (f instanceof TFile) {
+							await this.updateShareMirror(f, r.finalState);
+						}
+						this.appendShareAudit(
+							"share_folder_rule_applied",
+							path,
+							r.uuid,
+							rule.folderPath,
+						);
+					}
+				} else if (r.status === "skipped-not-owner") {
+					// Mark covered so the passive pass doesn't retry a note we
+					// can't mutate (owner-only) on every subsequent sync.
+					persisted.coveredUuids.push(r.uuid);
+					skippedNotOwner++;
+				} else {
+					errors++;
+				}
+			}
+			this.appendShareAudit(
+				"share_folder_rule_saved",
+				rule.folderPath || "(vault root)",
+				rule.folderPath,
+				`${applied} applied`,
+			);
+			await this.saveAll();
+			return {
+				applied,
+				skippedNotOwner,
+				errors,
+				notSynced: governed.length - syncedUuids.length,
+			};
+		} finally {
+			this.folderApplyInFlight = false;
+		}
+	}
+
+	private async deleteFolderRule(folderPath: string): Promise<void> {
+		this.data.folderShares = this.data.folderShares.filter(
+			(r) => r.folderPath !== folderPath,
+		);
+		this.appendShareAudit(
+			"share_folder_rule_deleted",
+			folderPath || "(vault root)",
+			folderPath,
+			null,
+		);
+		await this.saveAll();
+	}
+
+	// Public entry for the settings tab to remove a saved folder rule by path.
+	async removeFolderShare(folderPath: string): Promise<void> {
+		await this.deleteFolderRule(folderPath);
+	}
+
+	// Passive post-sync pass: for each standing folder rule, additively apply it
+	// to synced notes not yet covered (new / newly-synced files). Add-only —
+	// never removes or downgrades — so per-note customizations survive. An
+	// attempted note (owned or not) is marked covered so it isn't retried every
+	// cycle. Swallows its own errors so a share hiccup never fails the sync.
+	private async applyFolderShareRules(): Promise<void> {
+		if (this.folderApplyInFlight) return;
+		if (!this.vaultApi || !this.data.tokens || this.startupBlocked) return;
+		if (this.data.folderShares.length === 0) return;
+		try {
+			const notes = this.allFolderNotes();
+			const uuidToPath = new Map<string, string>();
+			for (const n of notes) if (n.uuid) uuidToPath.set(n.uuid, n.path);
+			let changed = false;
+			for (const rule of this.data.folderShares) {
+				const governed = notesGovernedByRule(
+					notes,
+					rule,
+					this.data.folderShares,
+					this.data.settings.excludedFolders,
+				);
+				const uncovered = uncoveredSyncedUuids(
+					governed,
+					rule.coveredUuids,
+				);
+				if (uncovered.length === 0) continue;
+				const results = await applyRuleToNotes(
+					this.vaultApi,
+					uncovered,
+					rule,
+					"additive",
+				);
+				for (const r of results) {
+					if (r.status === "error") continue;
+					if (!rule.coveredUuids.includes(r.uuid)) {
+						rule.coveredUuids.push(r.uuid);
+						changed = true;
+					}
+					if (r.status === "applied" && r.finalState) {
+						const path = uuidToPath.get(r.uuid);
+						if (path) {
+							const f =
+								this.app.vault.getAbstractFileByPath(path);
+							if (f instanceof TFile) {
+								await this.updateShareMirror(f, r.finalState);
+							}
+							this.appendShareAudit(
+								"share_folder_rule_applied",
+								path,
+								r.uuid,
+								rule.folderPath,
+							);
+						}
+					}
+				}
+			}
+			if (changed) await this.saveAll();
+		} catch (err) {
+			console.error("[huma] folder-share pass failed", err);
+		}
+	}
+
+	// Current markdown notes with their synced uuid, read from the manifest
+	// (authoritative for path↔id right after a sync, so a just-minted uuid isn't
+	// missed to metadata-cache lag). uuid is null for notes not yet synced.
+	private allFolderNotes(): FolderNote[] {
+		const uuidByPath = new Map(this.data.manifest.map((r) => [r.path, r.id]));
+		return this.app.vault
+			.getMarkdownFiles()
+			.map((f) => ({ path: f.path, uuid: uuidByPath.get(f.path) ?? null }));
+	}
+
+	private upsertFolderRule(rule: FolderShareRule): void {
+		const idx = this.data.folderShares.findIndex(
+			(r) => r.folderPath === rule.folderPath,
+		);
+		if (idx >= 0) this.data.folderShares[idx] = rule;
+		else this.data.folderShares.push(rule);
 	}
 
 	private async openNextConflict(): Promise<void> {
@@ -1336,6 +1605,24 @@ export function classifyErrorForUser(err: unknown): string {
 	return `Huma sync failed: ${message}`;
 }
 
+// Vault-relative folder path with leading/trailing slashes stripped; the vault
+// root ("/") normalizes to "" (matches every note). Storage + membership tests
+// agree on this shape.
+function normalizeFolderPath(path: string): string {
+	return path.replace(/^\/+|\/+$/g, "");
+}
+
+function defaultFolderRule(folderPath: string): FolderShareRule {
+	return {
+		folderPath,
+		visibility: "private",
+		tenantRole: "editor",
+		collaborators: [],
+		updatedAt: new Date().toISOString(),
+		coveredUuids: [],
+	};
+}
+
 function mergeData(stored: Partial<HumaPluginData> | null): HumaPluginData {
 	const base = structuredClone(DEFAULT_PLUGIN_DATA);
 	if (!stored) return base;
@@ -1349,5 +1636,6 @@ function mergeData(stored: Partial<HumaPluginData> | null): HumaPluginData {
 		pendingServerDeletes:
 			stored.pendingServerDeletes ?? base.pendingServerDeletes,
 		welcomeSeenAt: stored.welcomeSeenAt ?? base.welcomeSeenAt,
+		folderShares: stored.folderShares ?? base.folderShares,
 	};
 }
