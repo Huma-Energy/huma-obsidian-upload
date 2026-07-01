@@ -112,3 +112,11 @@ export function confirm(
 		new ConfirmModal(app, { ...opts, onResolve: resolve }).open();
 	});
 }
+
+// Shared payload for the delete-folder-rule confirmation, used by both the
+// folder-share modal and the settings tab so the locked wording stays in sync.
+export const DELETE_FOLDER_RULE_CONFIRM = {
+	title: "Delete folder rule?",
+	body: "New notes in this folder will no longer be shared automatically. Notes already shared keep their current access.",
+	cta: "Delete rule",
+} as const;

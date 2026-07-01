@@ -11,7 +11,7 @@ import type {
 	ShareVisibility,
 } from "../types";
 import type { FolderShareCollaborator, FolderShareRule } from "../settings";
-import { isExcludedPath } from "./exclusion";
+import { isExcludedPath, isPathUnderOrEqual } from "./exclusion";
 
 // A vault note as far as folder sharing cares: its current path and its
 // huma_uuid (null when the note has never synced, so has no document to share).
@@ -34,10 +34,11 @@ const ROLE_RANK: Record<ShareAssignableRole, number> = {
 };
 
 // A file sits under a folder when its path is prefixed by "<folder>/". The
-// empty string denotes the vault root, which contains every note.
+// empty string denotes the vault root, which contains every note. (A file path
+// never equals a folder path, so the equal-case in isPathUnderOrEqual is inert
+// here.)
 export function isUnderFolder(filePath: string, folderPath: string): boolean {
-	if (folderPath === "") return true;
-	return filePath.startsWith(folderPath + "/");
+	return folderPath === "" || isPathUnderOrEqual(filePath, folderPath);
 }
 
 // Notes under a folder (recursive), minus anything in an excluded folder —
@@ -253,20 +254,17 @@ export async function applyRule(
 }
 
 // Apply the rule to many notes sequentially (bounded, predictable ordering so
-// the caller can update coverage + mirrors as it goes). Folder shares are tens
-// of notes, not thousands; sequential keeps request pressure low.
+// the caller can update coverage + mirrors from the returned results). Folder
+// shares are tens of notes, not thousands; sequential keeps request pressure low.
 export async function applyRuleToNotes(
 	api: ShareApi,
 	uuids: readonly string[],
 	rule: FolderShareRule,
 	mode: ApplyMode,
-	onResult?: (result: NoteApplyResult) => void,
 ): Promise<NoteApplyResult[]> {
 	const results: NoteApplyResult[] = [];
 	for (const uuid of uuids) {
-		const result = await applyRule(api, uuid, rule, mode);
-		results.push(result);
-		onResult?.(result);
+		results.push(await applyRule(api, uuid, rule, mode));
 	}
 	return results;
 }

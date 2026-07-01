@@ -24,13 +24,16 @@ export function normalizeExcludedFolders(input: readonly string[]): string[] {
 	return out;
 }
 
+// True when `path` is the folder itself or sits under it ("<folder>/…"). The
+// single prefix primitive behind both sync exclusion and folder-share
+// membership, so the two can't drift on trailing-slash / boundary semantics.
+export function isPathUnderOrEqual(path: string, folder: string): boolean {
+	return path === folder || path.startsWith(folder + "/");
+}
+
 export function isExcludedPath(
 	path: string,
 	excludedFolders: readonly string[],
 ): boolean {
-	for (const folder of excludedFolders) {
-		if (path === folder) return true;
-		if (path.startsWith(folder + "/")) return true;
-	}
-	return false;
+	return excludedFolders.some((folder) => isPathUnderOrEqual(path, folder));
 }

@@ -1007,8 +1007,7 @@ export default class HumaVaultSyncPlugin extends Plugin {
 				this.data.folderShares,
 				this.data.settings.excludedFolders,
 			);
-			const uuidToPath = new Map<string, string>();
-			for (const n of governed) if (n.uuid) uuidToPath.set(n.uuid, n.path);
+			const uuidToPath = syncedUuidToPath(governed);
 			const syncedUuids = [...uuidToPath.keys()];
 
 			let applied = 0;
@@ -1021,9 +1020,7 @@ export default class HumaVaultSyncPlugin extends Plugin {
 				"reconcile",
 			);
 			for (const r of results) {
-				await this.reflectApplyResult(r, persisted, (u) =>
-					uuidToPath.get(u),
-				);
+				await this.reflectApplyResult(r, persisted, uuidToPath);
 				if (r.status === "applied") applied++;
 				else if (r.status === "skipped-not-owner") skippedNotOwner++;
 				else errors++;
@@ -1069,10 +1066,10 @@ export default class HumaVaultSyncPlugin extends Plugin {
 	private async reflectApplyResult(
 		result: NoteApplyResult,
 		rule: FolderShareRule,
-		pathOf: (uuid: string) => string | undefined,
+		pathByUuid: ReadonlyMap<string, string>,
 	): Promise<boolean> {
 		if (result.status === "error") return false;
-		const path = pathOf(result.uuid);
+		const path = pathByUuid.get(result.uuid);
 		if (result.status === "applied" && result.finalState && path) {
 			const f = this.app.vault.getAbstractFileByPath(path);
 			if (f instanceof TFile) {
@@ -1096,6 +1093,9 @@ export default class HumaVaultSyncPlugin extends Plugin {
 	// attempted note (owned or not) is marked covered so it isn't retried every
 	// cycle. Swallows its own errors so a share hiccup never fails the sync.
 	private async applyFolderShareRules(): Promise<void> {
+		// Suppressed while a deliberate applyFolderRule is mid-flight: that
+		// method awaits runFullSync(), whose tail calls this pass — the guard
+		// stops it double-applying against the reconcile it's about to run.
 		if (this.folderApplyInFlight) return;
 		if (!this.vaultApi || !this.data.tokens || this.startupBlocked) return;
 		if (this.data.folderShares.length === 0) return;
@@ -1116,10 +1116,7 @@ export default class HumaVaultSyncPlugin extends Plugin {
 				if (uncovered.length === 0) continue;
 				// Only pay for the uuid→path map once there's actual work — an
 				// idle vault with a covered rule skips this entirely.
-				const uuidToPath = new Map<string, string>();
-				for (const n of governed) {
-					if (n.uuid) uuidToPath.set(n.uuid, n.path);
-				}
+				const uuidToPath = syncedUuidToPath(governed);
 				const results = await applyRuleToNotes(
 					this.vaultApi,
 					uncovered,
@@ -1127,11 +1124,7 @@ export default class HumaVaultSyncPlugin extends Plugin {
 					"additive",
 				);
 				for (const r of results) {
-					if (
-						await this.reflectApplyResult(r, rule, (u) =>
-							uuidToPath.get(u),
-						)
-					) {
+					if (await this.reflectApplyResult(r, rule, uuidToPath)) {
 						changed = true;
 					}
 				}
@@ -1601,6 +1594,14 @@ export function classifyErrorForUser(err: unknown): string {
 	}
 	const message = err instanceof Error ? err.message : String(err);
 	return `Huma sync failed: ${message}`;
+}
+
+// uuid → current path for the synced notes in a governed set, used to resolve a
+// NoteApplyResult back to its file for the frontmatter mirror.
+function syncedUuidToPath(governed: readonly FolderNote[]): Map<string, string> {
+	const map = new Map<string, string>();
+	for (const n of governed) if (n.uuid) map.set(n.uuid, n.path);
+	return map;
 }
 
 function defaultFolderRule(folderPath: string): FolderShareRule {

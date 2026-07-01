@@ -285,17 +285,10 @@ describe("applyRule reconcile", () => {
 });
 
 describe("applyRuleToNotes", () => {
-	it("applies to each uuid and streams results via onResult", async () => {
+	it("applies the rule to each uuid and returns one result per note in order", async () => {
 		const { api } = makeApi();
-		const seen: string[] = [];
-		const results = await applyRuleToNotes(
-			api,
-			["u1", "u2"],
-			rule(),
-			"additive",
-			(r) => seen.push(r.uuid),
-		);
+		const results = await applyRuleToNotes(api, ["u1", "u2"], rule(), "additive");
+		expect(results.map((r) => r.uuid)).toEqual(["u1", "u2"]);
 		expect(results.map((r) => r.status)).toEqual(["applied", "applied"]);
-		expect(seen).toEqual(["u1", "u2"]);
 	});
 });

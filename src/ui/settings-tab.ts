@@ -4,7 +4,11 @@ import {
 	SYNC_INTERVAL_MIN_SECONDS,
 } from "../settings";
 import { normalizeExcludedFolders } from "../sync/exclusion";
-import { VISIBILITY_LABELS, confirm } from "./share-common";
+import {
+	DELETE_FOLDER_RULE_CONFIRM,
+	VISIBILITY_LABELS,
+	confirm,
+} from "./share-common";
 import type HumaVaultSyncPlugin from "../main";
 
 export class HumaSettingsTab extends PluginSettingTab {
@@ -55,11 +59,10 @@ export class HumaSettingsTab extends PluginSettingTab {
 					.setButtonText("Delete")
 					.setWarning()
 					.onClick(async () => {
-						const ok = await confirm(this.app, {
-							title: "Delete folder rule?",
-							body: "New notes in this folder will no longer be shared automatically. Notes already shared keep their current access.",
-							cta: "Delete rule",
-						});
+						const ok = await confirm(
+							this.app,
+							DELETE_FOLDER_RULE_CONFIRM,
+						);
 						if (!ok) return;
 						await this.plugin.deleteFolderRule(rule.folderPath);
 						this.display();

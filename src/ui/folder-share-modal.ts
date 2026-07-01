@@ -13,6 +13,7 @@ import type {
 	ShareVisibility,
 } from "../types";
 import {
+	DELETE_FOLDER_RULE_CONFIRM,
 	ROLE_LABELS,
 	VISIBILITY_LABELS,
 	confirm,
@@ -259,11 +260,7 @@ export class FolderShareModal extends Modal {
 
 	private async remove(): Promise<void> {
 		if (this.busy) return;
-		const ok = await confirm(this.app, {
-			title: "Delete folder rule?",
-			body: "New notes in this folder will no longer be shared automatically. Notes already shared keep their current access.",
-			cta: "Delete rule",
-		});
+		const ok = await confirm(this.app, DELETE_FOLDER_RULE_CONFIRM);
 		if (!ok) return;
 		this.busy = true;
 		this.render();
