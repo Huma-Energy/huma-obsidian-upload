@@ -1135,14 +1135,23 @@ export default class HumaVaultSyncPlugin extends Plugin {
 		}
 	}
 
-	// Current markdown notes with their synced uuid, read from the manifest
-	// (authoritative for path↔id right after a sync, so a just-minted uuid isn't
-	// missed to metadata-cache lag). uuid is null for notes not yet synced.
+	// Current markdown notes with their synced uuid. Resolve from the note's
+	// frontmatter first — huma_uuid travels with the file across renames, so a
+	// note that was renamed locally but not yet re-synced (manifest still holds
+	// the old path), or one left mid-path by a duplicate-UUID resolution, is
+	// still recognized as synced. Fall back to the manifest by path for a
+	// just-pushed note whose frontmatter write may not have reached the
+	// metadata cache yet. uuid is null only for genuinely unsynced notes.
 	private allFolderNotes(): FolderNote[] {
 		const uuidByPath = new Map(this.data.manifest.map((r) => [r.path, r.id]));
-		return this.app.vault
-			.getMarkdownFiles()
-			.map((f) => ({ path: f.path, uuid: uuidByPath.get(f.path) ?? null }));
+		return this.app.vault.getMarkdownFiles().map((f) => {
+			const frontmatter =
+				this.app.metadataCache.getFileCache(f)?.frontmatter ?? {};
+			return {
+				path: f.path,
+				uuid: readHumaUuid(frontmatter) ?? uuidByPath.get(f.path) ?? null,
+			};
+		});
 	}
 
 	private upsertFolderRule(rule: FolderShareRule): void {
