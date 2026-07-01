@@ -8,7 +8,7 @@ Bidirectional sync between an [Obsidian](https://obsidian.md) vault and the [Hum
 
 Edit notes locally in Obsidian (online or offline) and keep them in lockstep with the Huma web app. Identity is a UUID written into each note's frontmatter (`huma_uuid`), so renames don't break sync. Authentication uses the ZITADEL device-authorization grant — no token ever touches the vault.
 
-> **Status:** v0.1.7 — pre-release. The full sync engine ships: bidirectional pull/push with manifest reconciliation, three-way conflict emission to sibling `*.conflict.md` files, server-side three-way merge, ZITADEL device-flow sign-in, per-note and per-folder document sharing (visibility + collaborators), audit ring, vault-token-leak startup invariant, and resolution modals for stale local deletions, server-deleted files, and duplicate UUIDs. See `docs/MOBILE-QA.md` for the manual mobile verification matrix.
+> **Status:** v0.1.8 — pre-release. The full sync engine ships: bidirectional pull/push with manifest reconciliation, three-way conflict emission to sibling `*.conflict.md` files, server-side three-way merge, ZITADEL device-flow sign-in, per-note and per-folder document sharing (visibility + collaborators), audit ring, vault-token-leak startup invariant, and resolution modals for stale local deletions, server-deleted files, and duplicate UUIDs. See `docs/MOBILE-QA.md` for the manual mobile verification matrix.
 
 ## Install (BRAT, beta sideload)
 

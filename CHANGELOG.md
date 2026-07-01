@@ -4,6 +4,12 @@ All notable changes to **Huma Vault Sync** will be documented here. The format f
 
 ## [Unreleased]
 
+## [0.1.8] — 2026-07-01
+
+### Fixed
+
+- **Folder sharing now recognizes notes renamed locally before their rename has re-synced.** `allFolderNotes` matched a note's document id by its current path against the sync manifest (keyed by the last-synced path), so a note renamed in Obsidian — or left mid-path by a duplicate-UUID resolution — was treated as unsynced and silently skipped by both the apply and the passive post-sync pass. It stayed private and never became org-visible. Notes are now identified by their `huma_uuid` frontmatter (rename-stable), falling back to the manifest for a just-pushed note whose frontmatter hasn't reached the metadata cache yet. (Per-note sharing already read the uuid this way and was unaffected.)
+
 ## [0.1.7] — 2026-07-01
 
 ### Added
