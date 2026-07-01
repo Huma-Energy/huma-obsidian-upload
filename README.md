@@ -8,7 +8,7 @@ Bidirectional sync between an [Obsidian](https://obsidian.md) vault and the [Hum
 
 Edit notes locally in Obsidian (online or offline) and keep them in lockstep with the Huma web app. Identity is a UUID written into each note's frontmatter (`huma_uuid`), so renames don't break sync. Authentication uses the ZITADEL device-authorization grant — no token ever touches the vault.
 
-> **Status:** v0.1.6 — pre-release. The full sync engine ships: bidirectional pull/push with manifest reconciliation, three-way conflict emission to sibling `*.conflict.md` files, server-side three-way merge, ZITADEL device-flow sign-in, per-note document sharing (visibility + collaborators), audit ring, vault-token-leak startup invariant, and resolution modals for stale local deletions, server-deleted files, and duplicate UUIDs. See `docs/MOBILE-QA.md` for the manual mobile verification matrix.
+> **Status:** v0.1.7 — pre-release. The full sync engine ships: bidirectional pull/push with manifest reconciliation, three-way conflict emission to sibling `*.conflict.md` files, server-side three-way merge, ZITADEL device-flow sign-in, per-note and per-folder document sharing (visibility + collaborators), audit ring, vault-token-leak startup invariant, and resolution modals for stale local deletions, server-deleted files, and duplicate UUIDs. See `docs/MOBILE-QA.md` for the manual mobile verification matrix.
 
 ## Install (BRAT, beta sideload)
 
@@ -52,6 +52,14 @@ The panel offers:
 - **People** — add collaborators by name/email (typeahead) and set each to **Editor**, **Commenter**, or **Viewer**; remove with the per-row **×**. Only the note's owner can change sharing; for everyone else the panel is read-only.
 
 Changes apply immediately. The plugin mirrors the current state into read-only frontmatter — `huma_visibility`, `huma_shared_with` (collaborator count), and `huma_public_url` (when public) — so a note's sharing is visible at a glance. Editing these keys by hand does nothing: the server is authoritative and the mirror refreshes when you next open the panel. Requires a Huma backend that exposes the `/api/vault/share` endpoint.
+
+### Share a folder
+
+Right-click a folder → **"Share folder on Huma…"** to set a *standing rule* for everything in it: a visibility and a set of people, applied to every synced note under the folder (subfolders included; excluded folders are skipped). Notes that haven't synced yet are pushed first so they have something to share, and notes you don't own are skipped — the result summary reports "shared X; skipped Y you don't own".
+
+The rule is persistent and lives on this device. After each sync it is re-applied to **newly-synced notes** in the folder, so files you add later are shared automatically. This pass is add-only: a note you later adjust individually is left as-is. Re-opening the panel and editing the rule re-applies it to *every* note in the folder — with a confirmation first if the edit would reduce access (narrower visibility, or a removed/downgraded person).
+
+Deleting a folder rule (from the panel, or **Settings → Shared folders**) stops auto-sharing new notes; notes already shared keep the access they have. Because a vault folder isn't a Huma entity, there is no server-side "shared folder" — this is a client-side rule that fans the per-note sharing out for you.
 
 ## Conflict resolution
 

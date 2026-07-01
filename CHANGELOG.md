@@ -4,6 +4,23 @@ All notable changes to **Huma Vault Sync** will be documented here. The format f
 
 ## [Unreleased]
 
+## [0.1.7] — 2026-07-01
+
+### Added
+
+- **Folder sharing** (`src/ui/folder-share-modal.ts`, `src/sync/folder-share.ts`; folder context-menu **Share folder on Huma…**). Set a standing sharing rule on a whole vault folder — visibility (private / organization / public), the organization role, and per-person collaborators — applied by fan-out to every synced note under the folder (recursive, respecting excluded folders), reusing the per-note `/api/vault/share` endpoint. No new backend surface. Unsynced notes are pushed first; notes you don't own are skipped and reported in the result summary. Nested folder rules resolve most-specific-wins.
+- **Standing rules, auto-applied on sync.** A folder rule persists (per device) and is re-applied to newly-synced notes after each sync cycle — add-only, so a note you later customized individually is left alone. Editing the rule re-propagates it to every note in the folder, with a confirmation before any access-reducing change (narrowed visibility, removed/downgraded collaborator). Deleting a rule stops auto-sharing new notes but never revokes access already granted.
+- **Shared-folders management** in the settings tab: list, edit, and delete folder rules.
+- **Folder-share audit events** — `share_folder_rule_saved`, `share_folder_rule_deleted`, `share_folder_rule_applied` — recorded in the local audit ring.
+
+### Fixed
+
+- The **Stop sharing** button removal documented under 0.1.6 is now actually applied in source. The 0.1.6 release bumped the version and changelog but the `share-modal.ts` change was left uncommitted, so the button was still rendered.
+
+### Requires
+
+- The Humatopia backend `/api/vault/share` endpoint (unchanged since 0.1.5). Folder sharing adds no new backend surface.
+
 ## [0.1.6] — 2026-07-01
 
 ### Changed
