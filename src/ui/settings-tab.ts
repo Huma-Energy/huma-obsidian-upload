@@ -61,7 +61,7 @@ export class HumaSettingsTab extends PluginSettingTab {
 							cta: "Delete rule",
 						});
 						if (!ok) return;
-						await this.plugin.removeFolderShare(rule.folderPath);
+						await this.plugin.deleteFolderRule(rule.folderPath);
 						this.display();
 					}),
 			);

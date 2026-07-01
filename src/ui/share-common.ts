@@ -27,6 +27,38 @@ export function userLabel(user: ShareUser | null, fallbackId: string): string {
 	return user?.name ?? user?.email ?? fallbackId;
 }
 
+// Render collaborator-typeahead result rows into `resultsEl`: one row per
+// candidate with an "Add" CTA, or a single empty-state line when there are
+// none. Shared by both share modals so their result lists stay identical; each
+// modal keeps its own debounce and candidate filtering.
+export function renderUserSearchResults(
+	resultsEl: HTMLElement,
+	candidates: readonly ShareUser[],
+	onPick: (user: ShareUser) => void,
+	addLabel = "Add as editor",
+): void {
+	resultsEl.empty();
+	if (candidates.length === 0) {
+		resultsEl.createDiv({
+			cls: "huma-share-search-empty",
+			text: "No matching people.",
+		});
+		return;
+	}
+	for (const u of candidates) {
+		const row = resultsEl.createDiv({ cls: "huma-share-search-row" });
+		new Setting(row)
+			.setName(userLabel(u, u.zitadelSub))
+			.setDesc(u.email ?? "")
+			.addButton((b) =>
+				b
+					.setButtonText(addLabel)
+					.setCta()
+					.onClick(() => onPick(u)),
+			);
+	}
+}
+
 // Minimal yes/no confirmation. Used before destructive folder-rule
 // propagation (removing access / narrowing visibility across many notes).
 // Resolves false if the modal is dismissed without choosing.

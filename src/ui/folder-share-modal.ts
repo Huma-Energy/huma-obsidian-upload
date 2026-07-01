@@ -16,6 +16,7 @@ import {
 	ROLE_LABELS,
 	VISIBILITY_LABELS,
 	confirm,
+	renderUserSearchResults,
 	userLabel,
 } from "./share-common";
 import { isDestructiveEdit } from "../sync/folder-share";
@@ -207,36 +208,16 @@ export class FolderShareModal extends Modal {
 		} catch {
 			return;
 		}
-		resultsEl.empty();
 		const existing = new Set(this.rule.collaborators.map((c) => c.userId));
 		const candidates = users.filter((u) => !existing.has(u.zitadelSub));
-		if (candidates.length === 0) {
-			resultsEl.createDiv({
-				cls: "huma-share-search-empty",
-				text: "No matching people.",
-			});
-			return;
-		}
-		for (const u of candidates) {
-			const row = resultsEl.createDiv({ cls: "huma-share-search-row" });
-			new Setting(row)
-				.setName(userLabel(u, u.zitadelSub))
-				.setDesc(u.email ?? "")
-				.addButton((b) =>
-					b
-						.setButtonText("Add as editor")
-						.setCta()
-						.onClick(() => {
-							resultsEl.empty();
-							this.displayCache.set(u.zitadelSub, u);
-							this.rule.collaborators = [
-								...this.rule.collaborators,
-								{ userId: u.zitadelSub, role: "editor" },
-							];
-							this.render();
-						}),
-				);
-		}
+		renderUserSearchResults(resultsEl, candidates, (u) => {
+			this.displayCache.set(u.zitadelSub, u);
+			this.rule.collaborators = [
+				...this.rule.collaborators,
+				{ userId: u.zitadelSub, role: "editor" },
+			];
+			this.render();
+		});
 	}
 
 	private async apply(): Promise<void> {

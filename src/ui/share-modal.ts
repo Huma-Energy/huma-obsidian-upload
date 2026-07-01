@@ -11,7 +11,12 @@ import type {
 	ShareUser,
 	ShareVisibility,
 } from "../types";
-import { ROLE_LABELS, VISIBILITY_LABELS, userLabel } from "./share-common";
+import {
+	ROLE_LABELS,
+	VISIBILITY_LABELS,
+	renderUserSearchResults,
+	userLabel,
+} from "./share-common";
 
 // Deps return the refreshed state so the modal re-renders from server truth
 // after every mutation; the owner of these callbacks (main.ts) also updates
@@ -239,36 +244,17 @@ export class ShareModal extends Modal {
 		} catch {
 			return;
 		}
-		resultsEl.empty();
 		const ownerId = this.state.ownerId;
 		const existing = new Set(this.state.collaborators.map((c) => c.userId));
 		const candidates = users.filter(
 			(u) => u.zitadelSub !== ownerId && !existing.has(u.zitadelSub),
 		);
-		if (candidates.length === 0) {
-			resultsEl.createDiv({
-				cls: "huma-share-search-empty",
-				text: "No matching people.",
-			});
-			return;
-		}
-		for (const u of candidates) {
-			const row = resultsEl.createDiv({ cls: "huma-share-search-row" });
-			new Setting(row)
-				.setName(userLabel(u, u.zitadelSub))
-				.setDesc(u.email ?? "")
-				.addButton((b) =>
-					b
-						.setButtonText("Add as editor")
-						.setCta()
-						.onClick(() => {
-							resultsEl.empty();
-							void this.apply(() =>
-								this.deps.addCollaborator(u.zitadelSub, "editor"),
-							);
-						}),
-				);
-		}
+		renderUserSearchResults(resultsEl, candidates, (u) => {
+			resultsEl.empty();
+			void this.apply(() =>
+				this.deps.addCollaborator(u.zitadelSub, "editor"),
+			);
+		});
 	}
 
 }

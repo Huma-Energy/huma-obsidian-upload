@@ -40,6 +40,7 @@ import {
 	notesGovernedByRule,
 	uncoveredSyncedUuids,
 	type FolderNote,
+	type NoteApplyResult,
 } from "./sync/folder-share";
 import type {
 	DuplicateUuid,
@@ -48,7 +49,7 @@ import type {
 } from "./sync/reconcile";
 import type { PendingServerDelete } from "./settings";
 import { listConflictFiles } from "./sync/conflict";
-import { normalizeExcludedFolders } from "./sync/exclusion";
+import { normalizeExcludedFolders, stripFolderSlashes } from "./sync/exclusion";
 import { runPullWorker } from "./sync/pull-worker";
 import { scanVaultForTokens } from "./security/vault-token-scan";
 import { pushAuditMany } from "./audit/ring";
@@ -933,7 +934,7 @@ export default class HumaVaultSyncPlugin extends Plugin {
 
 	async openFolderShareForFolder(folder: TFolder): Promise<void> {
 		await this.openFolderShareByPath(
-			normalizeFolderPath(folder.path),
+			stripFolderSlashes(folder.path),
 			folder.name || "vault root",
 		);
 	}
@@ -990,11 +991,10 @@ export default class HumaVaultSyncPlugin extends Plugin {
 			// Q3: auto-push so unsynced notes under the folder gain documents.
 			await this.runFullSync();
 
+			// Standing config: same rule, fresh timestamp, coverage cleared so
+			// this deliberate edit re-propagates to every governed note.
 			const persisted: FolderShareRule = {
-				folderPath: rule.folderPath,
-				visibility: rule.visibility,
-				tenantRole: rule.tenantRole,
-				collaborators: rule.collaborators,
+				...rule,
 				updatedAt: new Date().toISOString(),
 				coveredUuids: [],
 			};
@@ -1021,30 +1021,12 @@ export default class HumaVaultSyncPlugin extends Plugin {
 				"reconcile",
 			);
 			for (const r of results) {
-				if (r.status === "applied") {
-					applied++;
-					persisted.coveredUuids.push(r.uuid);
-					const path = uuidToPath.get(r.uuid);
-					if (r.finalState && path) {
-						const f = this.app.vault.getAbstractFileByPath(path);
-						if (f instanceof TFile) {
-							await this.updateShareMirror(f, r.finalState);
-						}
-						this.appendShareAudit(
-							"share_folder_rule_applied",
-							path,
-							r.uuid,
-							rule.folderPath,
-						);
-					}
-				} else if (r.status === "skipped-not-owner") {
-					// Mark covered so the passive pass doesn't retry a note we
-					// can't mutate (owner-only) on every subsequent sync.
-					persisted.coveredUuids.push(r.uuid);
-					skippedNotOwner++;
-				} else {
-					errors++;
-				}
+				await this.reflectApplyResult(r, persisted, (u) =>
+					uuidToPath.get(u),
+				);
+				if (r.status === "applied") applied++;
+				else if (r.status === "skipped-not-owner") skippedNotOwner++;
+				else errors++;
 			}
 			this.appendShareAudit(
 				"share_folder_rule_saved",
@@ -1064,7 +1046,10 @@ export default class HumaVaultSyncPlugin extends Plugin {
 		}
 	}
 
-	private async deleteFolderRule(folderPath: string): Promise<void> {
+	// Removes a standing folder rule (from the modal's delete action or the
+	// settings tab). Stops future application; never revokes access already
+	// granted.
+	async deleteFolderRule(folderPath: string): Promise<void> {
 		this.data.folderShares = this.data.folderShares.filter(
 			(r) => r.folderPath !== folderPath,
 		);
@@ -1077,9 +1062,32 @@ export default class HumaVaultSyncPlugin extends Plugin {
 		await this.saveAll();
 	}
 
-	// Public entry for the settings tab to remove a saved folder rule by path.
-	async removeFolderShare(folderPath: string): Promise<void> {
-		await this.deleteFolderRule(folderPath);
+	// Reflect one apply result locally, shared by the deliberate and passive
+	// folder passes: on a successful apply write the frontmatter mirror + audit;
+	// mark the note covered unless it errored (owner-less notes are covered too
+	// so the passive pass won't retry them). Returns whether coverage changed.
+	private async reflectApplyResult(
+		result: NoteApplyResult,
+		rule: FolderShareRule,
+		pathOf: (uuid: string) => string | undefined,
+	): Promise<boolean> {
+		if (result.status === "error") return false;
+		const path = pathOf(result.uuid);
+		if (result.status === "applied" && result.finalState && path) {
+			const f = this.app.vault.getAbstractFileByPath(path);
+			if (f instanceof TFile) {
+				await this.updateShareMirror(f, result.finalState);
+			}
+			this.appendShareAudit(
+				"share_folder_rule_applied",
+				path,
+				result.uuid,
+				rule.folderPath,
+			);
+		}
+		if (rule.coveredUuids.includes(result.uuid)) return false;
+		rule.coveredUuids.push(result.uuid);
+		return true;
 	}
 
 	// Passive post-sync pass: for each standing folder rule, additively apply it
@@ -1093,8 +1101,6 @@ export default class HumaVaultSyncPlugin extends Plugin {
 		if (this.data.folderShares.length === 0) return;
 		try {
 			const notes = this.allFolderNotes();
-			const uuidToPath = new Map<string, string>();
-			for (const n of notes) if (n.uuid) uuidToPath.set(n.uuid, n.path);
 			let changed = false;
 			for (const rule of this.data.folderShares) {
 				const governed = notesGovernedByRule(
@@ -1108,6 +1114,12 @@ export default class HumaVaultSyncPlugin extends Plugin {
 					rule.coveredUuids,
 				);
 				if (uncovered.length === 0) continue;
+				// Only pay for the uuid→path map once there's actual work — an
+				// idle vault with a covered rule skips this entirely.
+				const uuidToPath = new Map<string, string>();
+				for (const n of governed) {
+					if (n.uuid) uuidToPath.set(n.uuid, n.path);
+				}
 				const results = await applyRuleToNotes(
 					this.vaultApi,
 					uncovered,
@@ -1115,26 +1127,12 @@ export default class HumaVaultSyncPlugin extends Plugin {
 					"additive",
 				);
 				for (const r of results) {
-					if (r.status === "error") continue;
-					if (!rule.coveredUuids.includes(r.uuid)) {
-						rule.coveredUuids.push(r.uuid);
+					if (
+						await this.reflectApplyResult(r, rule, (u) =>
+							uuidToPath.get(u),
+						)
+					) {
 						changed = true;
-					}
-					if (r.status === "applied" && r.finalState) {
-						const path = uuidToPath.get(r.uuid);
-						if (path) {
-							const f =
-								this.app.vault.getAbstractFileByPath(path);
-							if (f instanceof TFile) {
-								await this.updateShareMirror(f, r.finalState);
-							}
-							this.appendShareAudit(
-								"share_folder_rule_applied",
-								path,
-								r.uuid,
-								rule.folderPath,
-							);
-						}
 					}
 				}
 			}
@@ -1603,13 +1601,6 @@ export function classifyErrorForUser(err: unknown): string {
 	}
 	const message = err instanceof Error ? err.message : String(err);
 	return `Huma sync failed: ${message}`;
-}
-
-// Vault-relative folder path with leading/trailing slashes stripped; the vault
-// root ("/") normalizes to "" (matches every note). Storage + membership tests
-// agree on this shape.
-function normalizeFolderPath(path: string): string {
-	return path.replace(/^\/+|\/+$/g, "");
 }
 
 function defaultFolderRule(folderPath: string): FolderShareRule {

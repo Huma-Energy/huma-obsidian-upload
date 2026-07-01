@@ -4,11 +4,18 @@
 // user input from the settings textarea (trim, drop empty lines, strip
 // leading/trailing slashes) so storage and matching agree.
 
+// Strip leading/trailing slashes from a vault-relative folder path; the vault
+// root ("/") normalizes to "". Shared so folder-share paths and exclusion paths
+// agree on the same shape that isUnderFolder / isExcludedPath match against.
+export function stripFolderSlashes(path: string): string {
+	return path.replace(/^\/+|\/+$/g, "");
+}
+
 export function normalizeExcludedFolders(input: readonly string[]): string[] {
 	const out: string[] = [];
 	const seen = new Set<string>();
 	for (const raw of input) {
-		const trimmed = raw.trim().replace(/^\/+|\/+$/g, "");
+		const trimmed = stripFolderSlashes(raw.trim());
 		if (trimmed.length === 0) continue;
 		if (seen.has(trimmed)) continue;
 		seen.add(trimmed);
