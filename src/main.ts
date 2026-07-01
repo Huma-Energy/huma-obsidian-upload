@@ -841,10 +841,6 @@ export default class HumaVaultSyncPlugin extends Plugin {
 				await api.removeCollaborator(uuid, userId);
 				return refresh("share_collaborator_removed", userId);
 			},
-			stopSharing: async () => {
-				await api.stopSharing(uuid);
-				return refresh("share_stopped", null);
-			},
 			searchUsers: async (q: string) => (await api.searchUsers(q)).results,
 		};
 	}

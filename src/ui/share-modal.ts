@@ -42,7 +42,6 @@ export interface ShareModalDeps {
 		role: ShareAssignableRole,
 	): Promise<ShareStateResponse>;
 	removeCollaborator(userId: string): Promise<ShareStateResponse>;
-	stopSharing(): Promise<ShareStateResponse>;
 	searchUsers(q: string): Promise<ShareUser[]>;
 }
 
@@ -111,7 +110,6 @@ export class ShareModal extends Modal {
 		this.renderVisibility();
 		this.renderPeople();
 		this.renderAddPeople();
-		this.renderStopSharing();
 	}
 
 	private renderReadOnly(): void {
@@ -288,19 +286,4 @@ export class ShareModal extends Modal {
 		}
 	}
 
-	private renderStopSharing(): void {
-		const sharedWithSomeone =
-			this.state.visibility !== "private" ||
-			this.state.collaborators.length > 0;
-		if (!sharedWithSomeone) return;
-		new Setting(this.contentEl)
-			.setDesc("Return this note to owner-only — private and no collaborators.")
-			.addButton((b) =>
-				b
-					.setButtonText("Stop sharing")
-					.setWarning()
-					.setDisabled(this.busy)
-					.onClick(() => void this.apply(() => this.deps.stopSharing())),
-			);
-	}
 }
