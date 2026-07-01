@@ -8,7 +8,7 @@ Bidirectional sync between an [Obsidian](https://obsidian.md) vault and the [Hum
 
 Edit notes locally in Obsidian (online or offline) and keep them in lockstep with the Huma web app. Identity is a UUID written into each note's frontmatter (`huma_uuid`), so renames don't break sync. Authentication uses the ZITADEL device-authorization grant — no token ever touches the vault.
 
-> **Status:** v0.1.1 — pre-release. The full sync engine ships: bidirectional pull/push with manifest reconciliation, three-way conflict emission to sibling `*.conflict.md` files, server-side three-way merge, ZITADEL device-flow sign-in, audit ring, vault-token-leak startup invariant, and resolution modals for stale local deletions, server-deleted files, and duplicate UUIDs. See `docs/MOBILE-QA.md` for the manual mobile verification matrix.
+> **Status:** v0.1.6 — pre-release. The full sync engine ships: bidirectional pull/push with manifest reconciliation, three-way conflict emission to sibling `*.conflict.md` files, server-side three-way merge, ZITADEL device-flow sign-in, per-note document sharing (visibility + collaborators), audit ring, vault-token-leak startup invariant, and resolution modals for stale local deletions, server-deleted files, and duplicate UUIDs. See `docs/MOBILE-QA.md` for the manual mobile verification matrix.
 
 ## Install (BRAT, beta sideload)
 
@@ -36,6 +36,22 @@ The plugin's settings tab exposes:
 - **Sync now** — runs an immediate sync cycle. Same code path as the command-palette `Sync now` action, the ribbon icon, and clicking the status-bar item when it's in the `idle` state.
 - **Sync interval** — desktop polling interval (default 30s, min 10s, max 300s). Mobile syncs only on foreground resume and on explicit user commands.
 - **Excluded folders** — vault-relative folder paths whose contents are skipped by sync (one path per line, prefix match). Files already on the server are *not* deleted when a folder is added — they remain frozen at their last-synced version until you archive them on the dashboard.
+
+## Sharing
+
+Set who can see a synced note directly from Obsidian, reusing Huma's document access control. Open the share panel from either:
+
+- **Right-click a note → "Share on Huma…"** in the file explorer, or
+- the command palette → **Huma Vault Sync: Share this note**.
+
+Both require you to be signed in and on a Markdown note. A note that hasn't synced yet is pushed automatically first, so it has a document to share. Sharing is *not* on the status-bar item — that only reports sync state.
+
+The panel offers:
+
+- **Visibility** — **Private** (only you and people you add), **Organization** (everyone in your Huma org, at a role you choose), or **Public** (anyone with a non-guessable link; a **Copy** button gives you the URL — un-publishing rotates the link).
+- **People** — add collaborators by name/email (typeahead) and set each to **Editor**, **Commenter**, or **Viewer**; remove with the per-row **×**. Only the note's owner can change sharing; for everyone else the panel is read-only.
+
+Changes apply immediately. The plugin mirrors the current state into read-only frontmatter — `huma_visibility`, `huma_shared_with` (collaborator count), and `huma_public_url` (when public) — so a note's sharing is visible at a glance. Editing these keys by hand does nothing: the server is authoritative and the mirror refreshes when you next open the panel. Requires a Huma backend that exposes the `/api/vault/share` endpoint.
 
 ## Conflict resolution
 
