@@ -4,6 +4,20 @@ All notable changes to **Huma Vault Sync** will be documented here. The format f
 
 ## [Unreleased]
 
+## [0.1.5] — 2026-07-01
+
+### Added
+
+- **Document sharing** (`src/ui/share-modal.ts`; command **Share this note** + a **Share on Huma…** file-menu item). Set a synced note's visibility (private / organization / public) and manage per-person collaborators (editor / commenter / viewer) without leaving Obsidian, reusing Humatopia's document ACL. Each control applies live via the new bearer-authed `/api/vault/share` endpoint; the modal is read-only for non-owners, and a **Stop sharing** action returns a note to owner-only (private + no collaborators) in one step.
+- **Auto-push on share.** Sharing a not-yet-synced note first pushes it to mint its `documents` row, then opens the modal.
+- **Read-only frontmatter mirror.** `huma_visibility`, `huma_shared_with` (collaborator count), and `huma_public_url` (when public) are written through a self-write-tracked `processFrontMatter`, so the mirror write never triggers a spurious sync; refreshed each time the Share modal opens.
+- **Sharing audit events** — `share_visibility_changed`, `share_tenant_role_changed`, `share_collaborator_added` / `_removed` / `_role_changed`, and `share_stopped` — recorded in the local audit ring and surfaced in **Show sync log**.
+- `VaultApiClient` sharing methods (`getShareState`, `setVisibility`, `setTenantRole`, add/update/remove collaborator, `stopSharing`, `searchUsers`) and the `/api/vault/share` wire types.
+
+### Requires
+
+- The Humatopia backend `/api/vault/share` endpoint (humatopia-frontend #54). Older backends return 404 for sharing calls; the rest of sync is unaffected.
+
 ## [0.1.4] — 2026-06-24
 
 ### Added
