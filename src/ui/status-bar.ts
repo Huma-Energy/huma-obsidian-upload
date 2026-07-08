@@ -112,7 +112,7 @@ export function formatStatusAria(state: StatusBarState): string {
 		case "blocked":
 			return `Huma Vault Sync blocked: ${state.reason}. Click to open settings.`;
 		case "signed-out":
-			return "Huma Vault Sync signed out. Click to open settings.";
+			return "Huma Vault Sync signed out. Click to sign in.";
 		case "idle":
 			return state.lastSyncedAt
 				? `Huma Vault Sync idle. Last synced ${state.lastSyncedAt}. Click to sync now.`

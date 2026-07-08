@@ -140,7 +140,16 @@ export default class HumaVaultSyncPlugin extends Plugin {
 					// a manual sync. Equivalent to the command-palette
 					// "Sync now" action and the ribbon icon.
 					void this.runFullSync();
+				} else if (state.kind === "signed-out") {
+					// Not signed in — clicking the log-in icon starts the
+					// device-flow sign-in directly (same path as the "Sign in"
+					// command and the settings button), rather than sending the
+					// user off to the settings tab.
+					void this.signIn().catch((err) =>
+						new Notice(classifyErrorForUser(err), 6000),
+					);
 				} else {
+					// syncing / blocked — nothing actionable from a click.
 					new Notice(
 						"Huma: open the plugin settings to manage sync.",
 						4000,
