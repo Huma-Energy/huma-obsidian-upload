@@ -4,6 +4,12 @@ All notable changes to **Huma Vault Sync** will be documented here. The format f
 
 ## [Unreleased]
 
+## [0.1.9] — 2026-07-08
+
+### Changed
+
+- **Clicking the status-bar item while signed out now starts sign-in** (the ZITADEL device-flow) instead of showing an "open the plugin settings" notice. The signed-out state already used a log-in icon, so the click now matches the affordance; tooltip updated to "Click to sign in." The `syncing` and `blocked` states are unchanged (a click there has nothing actionable; `blocked` intentionally refuses sign-in until the vault token is removed).
+
 ## [0.1.8] — 2026-07-01
 
 ### Fixed
